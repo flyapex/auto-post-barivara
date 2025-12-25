@@ -1,0 +1,1720 @@
+
+===== ./types.js =====
+
+/**
+ * Type definitions for the Facebook Post Downloader extension
+ * (JSDoc style for JavaScript projects)
+ */
+
+/**
+ * @typedef {Object} Media
+ * @property {'image' | 'video'} type - Type of media
+ * @property {string} url - URL of the media file
+ */
+
+/**
+ * @typedef {Object} Post
+ * @property {string} id - Unique post identifier
+ * @property {string} [author] - Post author name
+ * @property {number} [createdTime] - Unix timestamp
+ * @property {string} [text] - Post text content
+ * @property {string} [group] - Group name if posted in a group
+ * @property {Media[]} media - Array of media attachments
+ */
+
+/**
+ * @typedef {Object} DownloadTask
+ * @property {string} url - Download URL
+ * @property {string} filename - Target filename with path
+ * @property {string} postId - Associated post ID
+ * @property {number} tabId - Tab ID for notifications
+ * @property {number} retries - Number of retry attempts
+ * @property {boolean} [isBlob] - Whether URL is a blob
+ */
+
+/**
+ * @typedef {Object} DownloadProgress
+ * @property {number} completed - Number of completed downloads
+ * @property {number} total - Total number of downloads
+ */
+
+/**
+ * @typedef {Object} ExtensionMessage
+ * @property {boolean} __EXT__ - Extension message identifier
+ * @property {string} type - Message type
+ * @property {*} payload - Message payload
+ */
+
+export {};
+
+
+===== ./background\index.js =====
+
+// Background Service Worker
+console.log("[Background] Service worker starting...");
+
+const MAX_CONCURRENT_DOWNLOADS = 3;
+const downloadQueue = [];
+const activeDownloads = new Map();
+
+// Message handler
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log(
+    "[Background] Received message:",
+    message.type,
+    "from tab:",
+    sender.tab?.id
+  );
+
+  try {
+    if (message.type === "DOWNLOAD") {
+      handleDownload(message.payload, sender.tab.id);
+      sendResponse({ success: true });
+      return true; // Keep channel open
+    } else if (message.type === "UPDATE_BADGE") {
+      updateBadge(message.payload);
+      sendResponse({ success: true });
+      return true;
+    } else if (message.type === "GET_DOWNLOAD_STATUS") {
+      sendResponse({
+        queue: downloadQueue.length,
+        active: activeDownloads.size,
+      });
+      return true;
+    } else if (message.type === "POSTS_DETECTED") {
+      // Just acknowledge - no action needed
+      console.log(
+        "[Background] Posts detected:",
+        message.payload?.posts?.length || 0
+      );
+      sendResponse({ success: true, received: true });
+      return true;
+    } else {
+      // Unknown message type - still respond
+      console.log("[Background] Unknown message type:", message.type);
+      sendResponse({ success: true, unknown: true });
+      return true;
+    }
+  } catch (error) {
+    console.error("[Background] Error handling message:", error);
+    sendResponse({ success: false, error: error.message });
+    return true;
+  }
+});
+
+// Handle download request
+async function handleDownload(payload, tabId) {
+  console.log(
+    "[Background] Handling download for",
+    payload.posts?.length || 0,
+    "posts"
+  );
+
+  const { posts } = payload;
+
+  for (const post of posts) {
+    if (post.media && post.media.length > 0) {
+      for (let i = 0; i < post.media.length; i++) {
+        const media = post.media[i];
+        const downloadTask = {
+          url: media.url,
+          filename: generateFilename(post, media, i),
+          postId: post.id,
+          tabId: tabId,
+          retries: 0,
+        };
+        downloadQueue.push(downloadTask);
+        console.log("[Background] Queued download:", downloadTask.filename);
+      }
+
+      // Create metadata file
+      const metadata = generateMetadata(post);
+      const metadataBlob = new Blob([metadata], { type: "text/markdown" });
+      const metadataUrl = URL.createObjectURL(metadataBlob);
+      downloadQueue.push({
+        url: metadataUrl,
+        filename: generateFilename(post, { type: "metadata" }, 0),
+        postId: post.id,
+        tabId: tabId,
+        retries: 0,
+        isBlob: true,
+      });
+      console.log("[Background] Queued metadata file");
+    }
+  }
+
+  console.log("[Background] Total in queue:", downloadQueue.length);
+  processQueue();
+}
+
+// Process download queue
+async function processQueue() {
+  console.log("[Background] Processing queue...", {
+    queue: downloadQueue.length,
+    active: activeDownloads.size,
+    maxConcurrent: MAX_CONCURRENT_DOWNLOADS,
+  });
+
+  while (
+    downloadQueue.length > 0 &&
+    activeDownloads.size < MAX_CONCURRENT_DOWNLOADS
+  ) {
+    const task = downloadQueue.shift();
+    startDownload(task);
+  }
+}
+
+// Start individual download
+async function startDownload(task) {
+  console.log("[Background] Starting download:", task.filename);
+
+  try {
+    const downloadId = await chrome.downloads.download({
+      url: task.url,
+      filename: task.filename,
+      conflictAction: "uniquify",
+    });
+
+    console.log("[Background] Download started with ID:", downloadId);
+    activeDownloads.set(downloadId, task);
+
+    // Notify content script
+    chrome.tabs
+      .sendMessage(task.tabId, {
+        type: "DOWNLOAD_STARTED",
+        payload: { postId: task.postId, downloadId },
+      })
+      .catch((err) => {
+        console.log(
+          "[Background] Could not notify tab (tab may be closed):",
+          err.message
+        );
+      });
+  } catch (error) {
+    console.error("[Background] Download failed:", error);
+
+    // Retry logic
+    if (task.retries < 3) {
+      task.retries++;
+      console.log("[Background] Retrying download (attempt", task.retries, ")");
+      downloadQueue.push(task);
+      setTimeout(processQueue, 2000);
+    } else {
+      console.error(
+        "[Background] Download failed after 3 retries:",
+        task.filename
+      );
+      // Notify failure
+      chrome.tabs
+        .sendMessage(task.tabId, {
+          type: "DOWNLOAD_FAILED",
+          payload: { postId: task.postId, error: error.message },
+        })
+        .catch(() => {});
+    }
+  }
+}
+
+// Listen for download completion
+chrome.downloads.onChanged.addListener((delta) => {
+  if (delta.state && delta.state.current === "complete") {
+    const task = activeDownloads.get(delta.id);
+    if (task) {
+      console.log("[Background] Download completed:", task.filename);
+      activeDownloads.delete(delta.id);
+
+      // Cleanup blob URLs
+      if (task.isBlob) {
+        URL.revokeObjectURL(task.url);
+      }
+
+      // Notify content script
+      chrome.tabs
+        .sendMessage(task.tabId, {
+          type: "DOWNLOAD_COMPLETE",
+          payload: { postId: task.postId, downloadId: delta.id },
+        })
+        .catch(() => {});
+
+      // Process next in queue
+      processQueue();
+    }
+  } else if (delta.state && delta.state.current === "interrupted") {
+    const task = activeDownloads.get(delta.id);
+    if (task) {
+      console.error("[Background] Download interrupted:", task.filename);
+      activeDownloads.delete(delta.id);
+
+      // Retry
+      if (task.retries < 3) {
+        task.retries++;
+        downloadQueue.push(task);
+        setTimeout(processQueue, 2000);
+      }
+    }
+  }
+});
+
+// Generate safe filename
+function generateFilename(post, media, index) {
+  const date = post.createdTime
+    ? new Date(post.createdTime * 1000)
+    : new Date();
+  const dateStr = date.toISOString().split("T")[0];
+  const author = sanitizeFilename(post.author || "unknown");
+  const postIdShort = post.id ? post.id.slice(-8) : "unknown";
+
+  if (media.type === "metadata") {
+    return `facebook_downloads/${dateStr}_${author}_${postIdShort}/index.md`;
+  }
+
+  const ext = media.type === "video" ? "mp4" : "jpg";
+  const suffix = index > 0 ? `_${index}` : "";
+
+  return `facebook_downloads/${dateStr}_${author}_${postIdShort}/${media.type}${suffix}.${ext}`;
+}
+
+// Sanitize filename
+function sanitizeFilename(str) {
+  return str
+    .replace(/[^a-z0-9]/gi, "_")
+    .replace(/_+/g, "_")
+    .substring(0, 50)
+    .toLowerCase();
+}
+
+// Generate metadata
+function generateMetadata(post) {
+  let md = `# Facebook Post\n\n`;
+  md += `**Post ID:** ${post.id || "N/A"}\n`;
+  md += `**Author:** ${post.author || "N/A"}\n`;
+  md += `**Created:** ${
+    post.createdTime ? new Date(post.createdTime * 1000).toISOString() : "N/A"
+  }\n`;
+  if (post.group) md += `**Group:** ${post.group}\n`;
+  md += `\n## Content\n\n`;
+  md += post.text || "(No text content)";
+  md += `\n\n## Media\n\n`;
+  if (post.media && post.media.length > 0) {
+    post.media.forEach((m, i) => {
+      md += `- ${m.type} ${i + 1}: ${m.url}\n`;
+    });
+  }
+  return md;
+}
+
+// Update badge
+function updateBadge(count) {
+  if (count > 0) {
+    chrome.action.setBadgeText({ text: count.toString() });
+    chrome.action.setBadgeBackgroundColor({ color: "#4CAF50" });
+  } else {
+    chrome.action.setBadgeText({ text: "" });
+  }
+}
+
+console.log("[Background] Service worker initialized and ready!");
+
+// Self-test on startup
+setTimeout(() => {
+  console.log("[Background] Self-test: Service worker is alive");
+}, 1000);
+
+
+===== ./content\main.jsx =====
+
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import DownloaderApp from "./views/DownloaderApp";
+
+console.log("[Facebook Downloader] Content script START");
+console.log("[Facebook Downloader] Location:", window.location.href);
+console.log("[Facebook Downloader] Document state:", document.readyState);
+
+// Check if extension context is valid
+function isExtensionContextValid() {
+  try {
+    return !!chrome.runtime?.id;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Inject page script
+function injectPageScript() {
+  if (!isExtensionContextValid()) {
+    console.error("[Facebook Downloader] Extension context invalid");
+    return;
+  }
+
+  try {
+    const script = document.createElement("script");
+    // Use the new GraphQL interceptor
+    script.src = chrome.runtime.getURL("src/injected/graphql-interceptor.js");
+    script.type = "module";
+    script.onload = () => {
+      console.log(
+        "[Facebook Downloader] GraphQL interceptor injected successfully"
+      );
+      script.remove();
+    };
+    script.onerror = (error) => {
+      console.error(
+        "[Facebook Downloader] GraphQL interceptor injection failed:",
+        error
+      );
+    };
+
+    const target = document.head || document.documentElement;
+    if (target) {
+      target.appendChild(script);
+      console.log(
+        "[Facebook Downloader] GraphQL interceptor element added to",
+        target.tagName
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[Facebook Downloader] Error injecting GraphQL interceptor:",
+      error
+    );
+  }
+}
+
+// Message bridge
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+
+  const message = event.data;
+
+  if (message && message.__EXT__ === true) {
+    console.log("[Facebook Downloader] Message from page:", message.type);
+
+    if (!isExtensionContextValid()) {
+      console.error("[Facebook Downloader] ❌ Extension context invalid!");
+      return;
+    }
+
+    chrome.runtime
+      .sendMessage({
+        type: message.type,
+        payload: message.payload,
+      })
+      .then((response) => {
+        console.log(
+          "[Facebook Downloader] Response from background:",
+          response
+        );
+        if (response) {
+          window.postMessage(
+            {
+              __EXT__: true,
+              type: `${message.type}_RESPONSE`,
+              payload: response,
+            },
+            "*"
+          );
+        }
+      })
+      .catch((err) => {
+        console.error("[Facebook Downloader] Message error:", err.message);
+      });
+  }
+});
+
+// Listen for messages from background
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log("[Facebook Downloader] Message from background:", message.type);
+  window.postMessage(
+    {
+      __EXT__: true,
+      type: message.type,
+      payload: message.payload,
+    },
+    "*"
+  );
+  sendResponse({ received: true });
+  return true;
+});
+
+// Create UI
+function initializeUI() {
+  console.log("[Facebook Downloader] Initializing UI...");
+
+  if (!document.body) {
+    setTimeout(initializeUI, 100);
+    return;
+  }
+
+  if (document.getElementById("fb-downloader-root")) {
+    console.log("[Facebook Downloader] UI already initialized");
+    return;
+  }
+
+  try {
+    const container = document.createElement("div");
+    container.id = "fb-downloader-root";
+    // CRITICAL: Set attributes to prevent React conflicts
+    container.setAttribute("data-reactroot", "");
+    container.style.cssText =
+      "all: initial; * { all: unset; } position: fixed !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; pointer-events: none !important; z-index: 2147483647 !important;";
+
+    console.log("[Facebook Downloader] Appending container to body");
+    document.body.appendChild(container);
+
+    console.log("[Facebook Downloader] Creating React root");
+    const root = createRoot(container);
+
+    console.log("[Facebook Downloader] Rendering React app");
+    root.render(<DownloaderApp />);
+
+    console.log("[Facebook Downloader] ✅ UI initialized successfully");
+
+    setTimeout(() => {
+      const check = document.getElementById("fb-downloader-root");
+      console.log(
+        "[Facebook Downloader] DOM check:",
+        check ? "✅ Found" : "❌ Not found"
+      );
+
+      const button = document.querySelector(".fb-dl-toggle");
+      console.log(
+        "[Facebook Downloader] Button check:",
+        button ? "✅ Found" : "❌ Not found"
+      );
+
+      if (button) {
+        console.log("[Facebook Downloader] 🎉 Button is visible!");
+      }
+    }, 1000);
+  } catch (error) {
+    console.error("[Facebook Downloader] ❌ Error initializing UI:", error);
+  }
+}
+
+// Initialize
+console.log("[Facebook Downloader] Starting initialization...");
+
+if (!isExtensionContextValid()) {
+  console.error("[Facebook Downloader] ❌ Extension context invalid!");
+} else {
+  injectPageScript();
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initializeUI);
+  } else {
+    initializeUI();
+  }
+
+  setTimeout(() => {
+    if (!document.getElementById("fb-downloader-root")) {
+      console.log("[Facebook Downloader] Fallback init");
+      initializeUI();
+    }
+  }, 2000);
+}
+
+console.log("[Facebook Downloader] Content script END");
+
+
+===== ./content\views\DownloaderApp.css =====
+
+.fb-dl-toggle {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 999999;
+}
+
+.fb-dl-toggle-btn {
+  background: #1877f2;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 60px;
+  height: 60px;
+  font-size: 24px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: all 0.3s;
+}
+
+.fb-dl-toggle-btn:hover {
+  background: #145dbf;
+  transform: scale(1.1);
+}
+
+.fb-dl-container {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 999999;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+}
+
+.fb-dl-panel {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  width: 900px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.fb-dl-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e4e6eb;
+  background: #f5f6f7;
+}
+
+.fb-dl-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1c1e21;
+}
+
+.fb-dl-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #65676b;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  transition: background 0.2s;
+}
+
+.fb-dl-close:hover {
+  background: #e4e6eb;
+}
+
+.fb-dl-stats {
+  display: flex;
+  gap: 20px;
+  padding: 12px 20px;
+  background: #f5f6f7;
+  border-bottom: 1px solid #e4e6eb;
+  font-size: 14px;
+  color: #65676b;
+}
+
+.fb-dl-progress {
+  padding: 12px 20px;
+  background: #e7f3ff;
+  border-bottom: 1px solid #e4e6eb;
+}
+
+.fb-dl-progress-bar {
+  width: 100%;
+  height: 8px;
+  background: #d0e7ff;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.fb-dl-progress-fill {
+  height: 100%;
+  background: #1877f2;
+  transition: width 0.3s;
+}
+
+.fb-dl-progress span {
+  font-size: 13px;
+  color: #1877f2;
+  font-weight: 500;
+}
+
+.fb-dl-controls {
+  display: flex;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e4e6eb;
+}
+
+.fb-dl-controls button {
+  padding: 8px 16px;
+  border: 1px solid #ccd0d5;
+  background: white;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.fb-dl-controls button:hover:not(:disabled) {
+  background: #f5f6f7;
+}
+
+.fb-dl-controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.fb-dl-download-btn {
+  background: #1877f2 !important;
+  color: white !important;
+  border: none !important;
+}
+
+.fb-dl-download-btn:hover:not(:disabled) {
+  background: #145dbf !important;
+}
+
+.fb-dl-posts {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.fb-dl-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: #65676b;
+  font-size: 14px;
+}
+
+.fb-dl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.fb-dl-table thead {
+  background: #f5f6f7;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.fb-dl-table th {
+  padding: 12px 16px;
+  text-align: left;
+  font-weight: 600;
+  color: #1c1e21;
+  border-bottom: 1px solid #e4e6eb;
+}
+
+.fb-dl-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid #e4e6eb;
+  color: #1c1e21;
+}
+
+.fb-dl-table tbody tr:hover {
+  background: #f5f6f7;
+}
+
+.fb-dl-table tbody tr.selected {
+  background: #e7f3ff;
+}
+
+.fb-dl-text-preview {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #65676b;
+}
+
+.fb-dl-media-types {
+  margin-left: 4px;
+  font-size: 12px;
+}
+
+input[type="checkbox"] {
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+}
+
+/* Auto-scroll section */
+.fb-dl-autoscroll {
+  padding: 12px 20px;
+  background: #e7f3ff;
+  border-bottom: 1px solid #e4e6eb;
+}
+
+.fb-dl-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1c1e21;
+  margin-bottom: 8px;
+}
+
+.fb-dl-scroll-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.fb-dl-btn-start {
+  background: #4caf50 !important;
+  color: white !important;
+  border: none !important;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.fb-dl-btn-start:disabled {
+  background: #9e9e9e !important;
+  cursor: not-allowed;
+}
+
+.fb-dl-btn-pause {
+  background: #ff9800 !important;
+  color: white !important;
+  border: none !important;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.fb-dl-btn-pause:disabled {
+  background: #9e9e9e !important;
+  cursor: not-allowed;
+}
+
+.fb-dl-btn-stop {
+  background: #f44336 !important;
+  color: white !important;
+  border: none !important;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.fb-dl-btn-stop:disabled {
+  background: #9e9e9e !important;
+  cursor: not-allowed;
+}
+
+.fb-dl-scroll-status {
+  margin-left: auto;
+  font-size: 13px;
+  color: #65676b;
+}
+
+.fb-dl-scroll-status strong {
+  color: #1877f2;
+  text-transform: uppercase;
+}
+
+/* Filters section */
+.fb-dl-filters {
+  padding: 12px 20px;
+  background: #f5f6f7;
+  border-bottom: 1px solid #e4e6eb;
+}
+
+.fb-dl-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.fb-dl-filter-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fb-dl-filter-item label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #65676b;
+}
+
+.fb-dl-filter-item input[type="text"],
+.fb-dl-filter-item input[type="number"],
+.fb-dl-filter-item select {
+  padding: 6px 8px;
+  border: 1px solid #ccd0d5;
+  border-radius: 4px;
+  font-size: 13px;
+  background: white;
+  color: #1c1e21;
+}
+
+.fb-dl-filter-item input[type="text"]:focus,
+.fb-dl-filter-item input[type="number"]:focus,
+.fb-dl-filter-item select:focus {
+  outline: none;
+  border-color: #1877f2;
+  box-shadow: 0 0 0 2px rgba(24, 119, 242, 0.1);
+}
+
+.fb-dl-btn-clear {
+  padding: 6px 12px;
+  background: #f44336;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  margin-top: 18px;
+}
+
+.fb-dl-btn-clear:hover {
+  background: #d32f2f;
+}
+
+/* Export buttons */
+.fb-dl-export-btn {
+  background: #4caf50 !important;
+  color: white !important;
+  border: none !important;
+}
+
+.fb-dl-export-btn:hover:not(:disabled) {
+  background: #45a049 !important;
+}
+
+.fb-dl-export-btn:disabled {
+  background: #9e9e9e !important;
+}
+
+
+===== ./content\views\DownloaderApp.jsx =====
+
+import { useState, useEffect, useRef } from "react";
+import "./DownloaderApp.css";
+
+console.log("[DownloaderApp] Component loading");
+
+export default function DownloaderApp() {
+  console.log("[DownloaderApp] Component rendering");
+  const [show, setShow] = useState(false);
+  const [posts, setPosts] = useState([]);
+  const [selected, setSelected] = useState(new Set());
+  const [downloading, setDownloading] = useState(false);
+  const [progress, setProgress] = useState({ completed: 0, total: 0 });
+
+  // Auto-scroll states
+  const [isScrolling, setIsScrolling] = useState(false);
+  const [scrollStatus, setScrollStatus] = useState("idle"); // idle, running, paused, stopped
+
+  const scrollIntervalRef = useRef(null);
+
+  useEffect(() => {
+    console.log("[DownloaderApp] useEffect mounted");
+
+    // Listen for messages from page script
+    const handleMessage = (event) => {
+      if (event.source !== window) return;
+      const message = event.data;
+
+      if (message && message.__EXT__ === true) {
+        switch (message.type) {
+          case "POSTS_DETECTED":
+            setPosts(message.payload.posts);
+            break;
+          case "DOWNLOAD_STARTED":
+            setDownloading(true);
+            break;
+          case "DOWNLOAD_COMPLETE":
+            setProgress((prev) => ({ ...prev, completed: prev.completed + 1 }));
+            break;
+          case "DOWNLOAD_FAILED":
+            console.error("Download failed:", message.payload);
+            break;
+          case "ALL_DOWNLOADS_COMPLETE":
+            setDownloading(false);
+            setProgress({ completed: 0, total: 0 });
+            setSelected(new Set());
+            break;
+          case "EXTENSION_INVALIDATED":
+            alert(
+              message.payload.message +
+                "\n\nPress Ctrl+R (or Cmd+R on Mac) to refresh."
+            );
+            break;
+        }
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  // Auto-scroll functionality
+  const startAutoScroll = () => {
+    setScrollStatus("running");
+    setIsScrolling(true);
+
+    scrollIntervalRef.current = setInterval(() => {
+      window.scrollBy({
+        top: 500,
+        behavior: "smooth",
+      });
+
+      // Check if reached bottom
+      if (
+        window.innerHeight + window.scrollY >=
+        document.body.offsetHeight - 100
+      ) {
+        pauseAutoScroll();
+      }
+    }, 2000);
+  };
+
+  const pauseAutoScroll = () => {
+    if (scrollIntervalRef.current) {
+      clearInterval(scrollIntervalRef.current);
+      scrollIntervalRef.current = null;
+    }
+    setScrollStatus("paused");
+    setIsScrolling(false);
+  };
+
+  const stopAutoScroll = () => {
+    if (scrollIntervalRef.current) {
+      clearInterval(scrollIntervalRef.current);
+      scrollIntervalRef.current = null;
+    }
+    setScrollStatus("stopped");
+    setIsScrolling(false);
+  };
+
+  const togglePost = (postId) => {
+    setSelected((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(postId)) {
+        newSet.delete(postId);
+      } else {
+        newSet.add(postId);
+      }
+      return newSet;
+    });
+  };
+
+  const selectAll = () => {
+    if (selected.size === posts.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(posts.map((p) => p.id)));
+    }
+  };
+
+  const handleDownload = () => {
+    const selectedPosts = posts.filter((p) => selected.has(p.id));
+    if (selectedPosts.length === 0) return;
+
+    const totalMedia = selectedPosts.reduce(
+      (acc, p) => acc + (p.media?.length || 0),
+      0
+    );
+    setProgress({ completed: 0, total: totalMedia });
+
+    // Send download request to page script
+    window.postMessage(
+      {
+        __EXT__: true,
+        type: "DOWNLOAD",
+        payload: { posts: selectedPosts },
+      },
+      "*"
+    );
+  };
+
+  const exportToJSON = () => {
+    const selectedPosts = posts.filter((p) => selected.has(p.id));
+    const dataStr = JSON.stringify(selectedPosts, null, 2);
+    const dataBlob = new Blob([dataStr], { type: "application/json" });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `facebook_posts_${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportToCSV = () => {
+    const selectedPosts = posts.filter((p) => selected.has(p.id));
+
+    // CSV Headers
+    let csv = "ID,Author,Date,Text,Media Count,Media Types,Media URLs\n";
+
+    // CSV Rows
+    selectedPosts.forEach((post) => {
+      const date = post.createdTime
+        ? new Date(post.createdTime * 1000).toISOString()
+        : "Unknown";
+      const text = (post.text || "").replace(/"/g, '""').replace(/\n/g, " ");
+      const mediaCount = post.media?.length || 0;
+      const mediaTypes = post.media?.map((m) => m.type).join("; ") || "";
+      const mediaUrls = post.media?.map((m) => m.url).join("; ") || "";
+
+      csv += `"${post.id}","${
+        post.author || ""
+      }","${date}","${text}",${mediaCount},"${mediaTypes}","${mediaUrls}"\n`;
+    });
+
+    const dataBlob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `facebook_posts_${Date.now()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const formatDate = (timestamp) => {
+    if (!timestamp) return "Unknown";
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleDateString() + " " + date.toLocaleTimeString();
+  };
+
+  if (!show) {
+    console.log("[DownloaderApp] Rendering toggle button");
+    return (
+      <div className="fb-dl-toggle" style={{ pointerEvents: "auto" }}>
+        <button className="fb-dl-toggle-btn" onClick={() => setShow(true)}>
+          📥 {posts.length > 0 && `(${posts.length})`}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fb-dl-container" style={{ pointerEvents: "auto" }}>
+      <div className="fb-dl-panel">
+        <div className="fb-dl-header">
+          <h2>Facebook Post Downloader</h2>
+          <button className="fb-dl-close" onClick={() => setShow(false)}>
+            ✕
+          </button>
+        </div>
+
+        {/* Auto-scroll controls */}
+        <div className="fb-dl-autoscroll">
+          <div className="fb-dl-section-title">🔄 Auto-Scroll</div>
+          <div className="fb-dl-scroll-controls">
+            <button
+              onClick={startAutoScroll}
+              disabled={isScrolling || scrollStatus === "running"}
+              className="fb-dl-btn-start"
+            >
+              ▶️ Start
+            </button>
+            <button
+              onClick={pauseAutoScroll}
+              disabled={!isScrolling}
+              className="fb-dl-btn-pause"
+            >
+              ⏸️ Pause
+            </button>
+            <button
+              onClick={stopAutoScroll}
+              disabled={scrollStatus === "idle"}
+              className="fb-dl-btn-stop"
+            >
+              ⏹️ Stop
+            </button>
+            <span className="fb-dl-scroll-status">
+              Status: <strong>{scrollStatus}</strong>
+            </span>
+          </div>
+        </div>
+
+        <div className="fb-dl-stats">
+          <span>Total posts: {posts.length}</span>
+          <span>Selected: {selected.size}</span>
+        </div>
+
+        {downloading && (
+          <div className="fb-dl-progress">
+            <div className="fb-dl-progress-bar">
+              <div
+                className="fb-dl-progress-fill"
+                style={{
+                  width: `${(progress.completed / progress.total) * 100}%`,
+                }}
+              />
+            </div>
+            <span>
+              {progress.completed} / {progress.total} files
+            </span>
+          </div>
+        )}
+
+        <div className="fb-dl-controls">
+          <button onClick={selectAll} disabled={downloading}>
+            {selected.size === posts.length ? "Deselect All" : "Select All"}
+          </button>
+          <button
+            onClick={handleDownload}
+            disabled={selected.size === 0 || downloading}
+            className="fb-dl-download-btn"
+          >
+            📥 Download Media ({selected.size})
+          </button>
+          <button
+            onClick={exportToJSON}
+            disabled={selected.size === 0}
+            className="fb-dl-export-btn"
+          >
+            📄 Export JSON
+          </button>
+          <button
+            onClick={exportToCSV}
+            disabled={selected.size === 0}
+            className="fb-dl-export-btn"
+          >
+            📊 Export CSV
+          </button>
+        </div>
+
+        <div className="fb-dl-posts">
+          {posts.length === 0 ? (
+            <div className="fb-dl-empty">
+              No posts detected yet. Scroll through Facebook to capture posts.
+            </div>
+          ) : (
+            <table className="fb-dl-table">
+              <thead>
+                <tr>
+                  <th style={{ width: "40px" }}>Select</th>
+                  <th>Author</th>
+                  <th>Date</th>
+                  <th>Media</th>
+                  <th>Text Preview</th>
+                </tr>
+              </thead>
+              <tbody>
+                {posts.map((post) => (
+                  <tr
+                    key={post.id}
+                    className={selected.has(post.id) ? "selected" : ""}
+                  >
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selected.has(post.id)}
+                        onChange={() => togglePost(post.id)}
+                        disabled={downloading}
+                      />
+                    </td>
+                    <td>{post.author || "Unknown"}</td>
+                    <td>{formatDate(post.createdTime)}</td>
+                    <td>
+                      {post.media?.length || 0}
+                      {post.media?.length > 0 && (
+                        <span className="fb-dl-media-types">
+                          (
+                          {post.media
+                            .map((m) => (m.type === "video" ? "🎥" : "🖼️"))
+                            .join("")}
+                          )
+                        </span>
+                      )}
+                    </td>
+                    <td className="fb-dl-text-preview">
+                      {post.text
+                        ? post.text.substring(0, 50) +
+                          (post.text.length > 50 ? "..." : "")
+                        : "(no text)"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+===== ./injected\graphql-interceptor.js =====
+
+// GraphQL Interceptor using Facebook's internal system
+console.log("[FB Downloader] GraphQL interceptor loading...");
+
+const detectedPosts = new Map();
+
+// Use the current page origin
+const GRAPHQL_URL = `${location.origin}/api/graphql/`;
+
+/**
+ * Parse NDJSON response text into array of objects.
+ */
+function parseNdjson(text) {
+  // Strip common anti-JSON prefixes
+  if (text.startsWith("for (;;);")) text = text.slice("for (;;);".length);
+  if (text.startsWith(")]}'")) {
+    const firstNewline = text.indexOf("\n");
+    text = firstNewline === -1 ? "" : text.slice(firstNewline + 1);
+  }
+
+  const result = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      result.push(JSON.parse(trimmed));
+    } catch {
+      // skip invalid JSON lines
+    }
+  }
+  return result;
+}
+
+// Fetch interceptor
+if (!window.__fbDownloaderFetchPatched) {
+  window.__fbDownloaderFetchPatched = true;
+  console.log("[FB Downloader] Patching fetch...");
+
+  const originalFetch = window.fetch;
+
+  window.fetch = async function patchedFetch(input, init = {}) {
+    try {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof Request
+          ? input.url
+          : input instanceof URL
+          ? input.href
+          : undefined;
+
+      if (
+        init?.method === "POST" &&
+        typeof url === "string" &&
+        url.includes("/api/graphql")
+      ) {
+        console.log("[FB Downloader] GraphQL request intercepted:", url);
+
+        const res = await originalFetch(input, init);
+        const clone = res.clone();
+        const text = await clone.text();
+
+        const responseBody = parseNdjson(text);
+        console.log(
+          "[FB Downloader] GraphQL response parsed:",
+          responseBody.length,
+          "items"
+        );
+
+        // Extract posts from response
+        extractPostsFromGraphQL(responseBody);
+
+        return res;
+      }
+    } catch (err) {
+      console.error("[FB Downloader] Fetch hook error:", err);
+    }
+
+    return originalFetch(input, init);
+  };
+
+  console.log("[FB Downloader] Fetch patched successfully");
+}
+
+// XMLHttpRequest interceptor
+if (!window.__fbDownloaderXHRPatched) {
+  window.__fbDownloaderXHRPatched = true;
+  console.log("[FB Downloader] Patching XMLHttpRequest...");
+
+  const originalXHROpen = XMLHttpRequest.prototype.open;
+  const originalXHRSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function (method, url, ...args) {
+    this._fbdl_url = url;
+    this._fbdl_method = method;
+    return originalXHROpen.call(this, method, url, ...args);
+  };
+
+  XMLHttpRequest.prototype.send = function (body) {
+    if (this._fbdl_url && this._fbdl_url.includes("/api/graphql")) {
+      console.log("[FB Downloader] XHR GraphQL request intercepted");
+
+      this.addEventListener("load", function () {
+        try {
+          const responseBody = parseNdjson(this.responseText);
+          console.log(
+            "[FB Downloader] XHR GraphQL response parsed:",
+            responseBody.length,
+            "items"
+          );
+          extractPostsFromGraphQL(responseBody);
+        } catch (e) {
+          console.error("[FB Downloader] XHR parsing error:", e);
+        }
+      });
+    }
+    return originalXHRSend.call(this, body);
+  };
+
+  console.log("[FB Downloader] XMLHttpRequest patched successfully");
+}
+
+// Extract posts from GraphQL response
+function extractPostsFromGraphQL(responseBody) {
+  try {
+    console.log("[FB Downloader] Extracting posts from response...");
+
+    // Find posts recursively in the response
+    const posts = findPosts(responseBody);
+    console.log(`[FB Downloader] Found ${posts.length} potential posts`);
+
+    let newPostsCount = 0;
+
+    posts.forEach((post) => {
+      if (post.id && !detectedPosts.has(post.id)) {
+        const parsedPost = parsePost(post);
+
+        // DEBUG: Log what we extracted
+        console.log(`[FB Downloader] 🔍 DEBUG Post ${parsedPost.id}:`, {
+          author: parsedPost.author,
+          mediaCount: parsedPost.media?.length || 0,
+          hasText: !!parsedPost.text,
+          textLength: parsedPost.text?.length || 0,
+          textPreview: parsedPost.text?.substring(0, 50) || "(none)",
+        });
+
+        // Accept ALL posts that have an ID - remove filtering
+        if (parsedPost && parsedPost.id) {
+          detectedPosts.set(post.id, parsedPost);
+          newPostsCount++;
+
+          const mediaInfo = parsedPost.media?.length
+            ? `${parsedPost.media.length} media`
+            : "no media";
+          const textInfo = parsedPost.text
+            ? `text: ${parsedPost.text.substring(0, 30)}...`
+            : "no text";
+
+          console.log(
+            `[FB Downloader] ✅ Added post ${parsedPost.id} - ${mediaInfo}, ${textInfo}`
+          );
+        } else {
+          console.log(`[FB Downloader] ⚠️ Skipped post - no valid ID`);
+        }
+      }
+    });
+
+    console.log(`[FB Downloader] Total posts in memory: ${detectedPosts.size}`);
+
+    // Notify UI
+    if (newPostsCount > 0 || detectedPosts.size > 0) {
+      notifyPosts();
+    }
+  } catch (e) {
+    console.error("[FB Downloader] Error extracting posts:", e);
+  }
+}
+
+// Recursively find post objects
+function findPosts(obj, posts = [], depth = 0) {
+  if (!obj || typeof obj !== "object" || depth > 15) return posts;
+
+  // Look for story/node/edge structures (common in Facebook GraphQL)
+  if (obj.node?.id && obj.node) {
+    posts.push(obj.node);
+  }
+
+  if (obj.story?.id && obj.story) {
+    posts.push(obj.story);
+  }
+
+  // Check if this object looks like a post
+  if (
+    obj.id &&
+    (obj.message ||
+      obj.attachments ||
+      obj.comet_sections ||
+      obj.attached_story ||
+      obj.text)
+  ) {
+    posts.push(obj);
+  }
+
+  // Recursively search nested objects and arrays
+  if (Array.isArray(obj)) {
+    obj.forEach((item) => findPosts(item, posts, depth + 1));
+  } else {
+    Object.values(obj).forEach((value) => {
+      if (value && typeof value === "object") {
+        findPosts(value, posts, depth + 1);
+      }
+    });
+  }
+
+  return posts;
+}
+
+// Parse post object to extract relevant data
+function parsePost(post) {
+  return {
+    id: post.id || generateId(),
+    author: extractAuthor(post),
+    createdTime: extractCreatedTime(post),
+    text: extractText(post),
+    group: extractGroup(post),
+    media: extractMedia(post),
+  };
+}
+
+// Extract author information
+function extractAuthor(post) {
+  // Try various paths for author name
+  if (post.from?.name) return post.from.name;
+  if (post.actors?.[0]?.name) return post.actors[0].name;
+  if (post.comet_sections?.content?.story?.actors?.[0]?.name) {
+    return post.comet_sections.content.story.actors[0].name;
+  }
+  if (post.owner?.name) return post.owner.name;
+  if (post.creation_story?.comet_sections?.content?.story?.actors?.[0]?.name) {
+    return post.creation_story.comet_sections.content.story.actors[0].name;
+  }
+
+  // Additional paths for text-only posts
+  if (post.node?.actors?.[0]?.name) return post.node.actors[0].name;
+  if (post.story?.actors?.[0]?.name) return post.story.actors[0].name;
+
+  return "Unknown";
+}
+
+// Extract creation time
+function extractCreatedTime(post) {
+  if (post.created_time) return post.created_time;
+  if (post.creation_time) return post.creation_time;
+  if (post.publish_time) return post.publish_time;
+  if (post.comet_sections?.content?.story?.creation_time) {
+    return post.comet_sections.content.story.creation_time;
+  }
+  if (post.timestamp) return post.timestamp;
+
+  // Additional paths
+  if (post.node?.creation_time) return post.node.creation_time;
+  if (post.story?.creation_time) return post.story.creation_time;
+
+  return Math.floor(Date.now() / 1000);
+}
+
+// Extract text content - ENHANCED VERSION
+function extractText(post) {
+  // Try all possible text locations
+  const textPaths = [
+    post.message?.text,
+    post.message,
+    post.comet_sections?.content?.story?.message?.text,
+    post.story_message?.text,
+    post.text,
+    post.node?.message?.text,
+    post.node?.message,
+    post.story?.message?.text,
+    post.story?.message,
+    post.comet_sections?.message?.story?.message?.text,
+    post.content?.story?.message?.text,
+  ];
+
+  for (const textPath of textPaths) {
+    if (textPath && typeof textPath === "string" && textPath.trim()) {
+      console.log(
+        "[FB Downloader] 📝 Found text:",
+        textPath.substring(0, 50) + "..."
+      );
+      return textPath;
+    }
+  }
+
+  console.log("[FB Downloader] ❌ No text found in post");
+  return null;
+}
+
+// Extract group information
+function extractGroup(post) {
+  if (post.to?.data?.[0]?.name) return post.to.data[0].name;
+  if (
+    post.comet_sections?.context?.story?.comet_sections?.context_layout?.story
+      ?.comet_sections?.title?.story?.to?.name
+  ) {
+    return post.comet_sections.context.story.comet_sections.context_layout.story
+      .comet_sections.title.story.to.name;
+  }
+  if (post.feedback?.owning_group?.name) return post.feedback.owning_group.name;
+  return null;
+}
+
+// Extract media URLs from attachments
+function extractMedia(post) {
+  const media = [];
+
+  function searchMedia(obj, depth = 0) {
+    if (!obj || typeof obj !== "object" || depth > 10) return;
+
+    // Look for image URLs
+    if (obj.image?.uri) {
+      media.push({ type: "image", url: obj.image.uri });
+    }
+
+    if (obj.photo?.image?.uri) {
+      media.push({ type: "image", url: obj.photo.image.uri });
+    }
+
+    // High quality image
+    if (obj.image?.url) {
+      media.push({ type: "image", url: obj.image.url });
+    }
+
+    // Look for video URLs
+    if (obj.video?.playable_url) {
+      media.push({ type: "video", url: obj.video.playable_url });
+    }
+
+    if (obj.playable_url) {
+      media.push({ type: "video", url: obj.playable_url });
+    }
+
+    if (obj.playable_url_quality_hd) {
+      media.push({ type: "video", url: obj.playable_url_quality_hd });
+    }
+
+    if (obj.browser_native_hd_url) {
+      media.push({ type: "video", url: obj.browser_native_hd_url });
+    }
+
+    if (obj.browser_native_sd_url) {
+      media.push({ type: "video", url: obj.browser_native_sd_url });
+    }
+
+    // Look for high-res images
+    if (obj.full_width?.uri) {
+      media.push({ type: "image", url: obj.full_width.uri });
+    }
+
+    // Large image
+    if (obj.large_image?.uri) {
+      media.push({ type: "image", url: obj.large_image.uri });
+    }
+
+    // Generic URL that might be an image
+    if (
+      obj.url &&
+      typeof obj.url === "string" &&
+      (obj.url.includes("fbcdn.net") || obj.url.includes("facebook.com/photo"))
+    ) {
+      media.push({ type: "image", url: obj.url });
+    }
+
+    // Recursively search
+    if (Array.isArray(obj)) {
+      obj.forEach((item) => searchMedia(item, depth + 1));
+    } else if (typeof obj === "object") {
+      Object.values(obj).forEach((value) => searchMedia(value, depth + 1));
+    }
+  }
+
+  // Search in standard locations
+  if (post.attachments) {
+    searchMedia(post.attachments);
+  }
+
+  if (post.comet_sections) {
+    searchMedia(post.comet_sections);
+  }
+
+  if (post.attached_story) {
+    searchMedia(post.attached_story);
+  }
+
+  // Fallback: search entire post
+  if (media.length === 0) {
+    searchMedia(post);
+  }
+
+  // Remove duplicates
+  const uniqueMedia = [];
+  const seen = new Set();
+  media.forEach((m) => {
+    if (!seen.has(m.url)) {
+      seen.add(m.url);
+      uniqueMedia.push(m);
+    }
+  });
+
+  return uniqueMedia;
+}
+
+// Generate unique ID
+function generateId() {
+  return `post_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Notify content script about detected posts
+function notifyPosts() {
+  const postsArray = Array.from(detectedPosts.values());
+  console.log(`[FB Downloader] 📢 Notifying UI of ${postsArray.length} posts`);
+
+  // DEBUG: Show breakdown
+  const withMedia = postsArray.filter((p) => p.media?.length > 0).length;
+  const withText = postsArray.filter((p) => p.text).length;
+  const textOnly = postsArray.filter((p) => !p.media?.length && p.text).length;
+
+  console.log(
+    `[FB Downloader] 📊 Breakdown: ${withMedia} with media, ${withText} with text, ${textOnly} text-only`
+  );
+
+  window.postMessage(
+    {
+      __EXT__: true,
+      type: "POSTS_DETECTED",
+      payload: {
+        posts: postsArray,
+      },
+    },
+    "*"
+  );
+}
+
+// Listen for download requests from UI
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+
+  const message = event.data;
+  if (message && message.__EXT__ === true && message.type === "DOWNLOAD") {
+    console.log(
+      "[FB Downloader] Download requested for",
+      message.payload.posts.length,
+      "posts"
+    );
+    // Forward to background script via content script bridge
+    window.postMessage(
+      {
+        __EXT__: true,
+        type: "DOWNLOAD",
+        payload: message.payload,
+      },
+      "*"
+    );
+  }
+});
+
+// Periodically notify UI (keep posts visible)
+setInterval(() => {
+  if (detectedPosts.size > 0) {
+    notifyPosts();
+  }
+}, 5000);
+
+console.log("[FB Downloader] GraphQL interceptor ready! 🚀");
