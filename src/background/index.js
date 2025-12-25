@@ -1,5 +1,4 @@
 // Background Service Worker
-console.log("[Background] Service worker starting...");
 
 const MAX_CONCURRENT_DOWNLOADS = 3;
 const downloadQueue = [];
@@ -7,13 +6,6 @@ const activeDownloads = new Map();
 
 // Message handler
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log(
-    "[Background] Received message:",
-    message.type,
-    "from tab:",
-    sender.tab?.id
-  );
-
   try {
     if (message.type === "DOWNLOAD") {
       handleDownload(message.payload, sender.tab.id);
@@ -30,14 +22,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true;
     } else if (message.type === "POSTS_DETECTED") {
-      console.log(
-        "[Background] Posts detected:",
-        message.payload?.posts?.length || 0
-      );
       sendResponse({ success: true, received: true });
       return true;
     } else {
-      console.log("[Background] Unknown message type:", message.type);
       sendResponse({ success: true, unknown: true });
       return true;
     }
@@ -50,12 +37,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Handle download request
 async function handleDownload(payload, tabId) {
-  console.log(
-    "[Background] Handling download for",
-    payload.posts?.length || 0,
-    "posts"
-  );
-
   const { posts } = payload;
 
   for (const post of posts) {
@@ -71,10 +52,9 @@ async function handleDownload(payload, tabId) {
       retries: 0,
       isBlob: true,
     });
-    console.log("[Background] Queued metadata file for post:", post.id);
 
     // Download media if post has any
-    if (post.media && post.media.length > 0) {
+    if (post.media && post.media.length >= 0) {
       for (let i = 0; i < post.media.length; i++) {
         const media = post.media[i];
         const downloadTask = {
@@ -85,30 +65,16 @@ async function handleDownload(payload, tabId) {
           retries: 0,
         };
         downloadQueue.push(downloadTask);
-        console.log(
-          "[Background] Queued media download:",
-          downloadTask.filename
-        );
       }
     } else {
-      console.log(
-        "[Background] Post has no media, only creating metadata file"
-      );
     }
   }
 
-  console.log("[Background] Total in queue:", downloadQueue.length);
   processQueue();
 }
 
 // Process download queue
 async function processQueue() {
-  console.log("[Background] Processing queue...", {
-    queue: downloadQueue.length,
-    active: activeDownloads.size,
-    maxConcurrent: MAX_CONCURRENT_DOWNLOADS,
-  });
-
   while (
     downloadQueue.length > 0 &&
     activeDownloads.size < MAX_CONCURRENT_DOWNLOADS
@@ -120,8 +86,6 @@ async function processQueue() {
 
 // Start individual download
 async function startDownload(task) {
-  console.log("[Background] Starting download:", task.filename);
-
   try {
     const downloadId = await chrome.downloads.download({
       url: task.url,
@@ -129,7 +93,6 @@ async function startDownload(task) {
       conflictAction: "uniquify",
     });
 
-    console.log("[Background] Download started with ID:", downloadId);
     activeDownloads.set(downloadId, task);
 
     // Notify content script
@@ -150,7 +113,6 @@ async function startDownload(task) {
     // Retry logic
     if (task.retries < 3) {
       task.retries++;
-      console.log("[Background] Retrying download (attempt", task.retries, ")");
       downloadQueue.push(task);
       setTimeout(processQueue, 2000);
     } else {
@@ -174,7 +136,6 @@ chrome.downloads.onChanged.addListener((delta) => {
   if (delta.state && delta.state.current === "complete") {
     const task = activeDownloads.get(delta.id);
     if (task) {
-      console.log("[Background] Download completed:", task.filename);
       activeDownloads.delete(delta.id);
 
       // Cleanup blob URLs
@@ -268,8 +229,6 @@ function updateBadge(count) {
     chrome.action.setBadgeText({ text: "" });
   }
 }
-
-console.log("[Background] Service worker initialized and ready!");
 
 // Self-test on startup
 setTimeout(() => {

@@ -1,10 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import "./DownloaderApp.css";
 
-console.log("[DownloaderApp] Component loading");
-
 export default function DownloaderApp() {
-  console.log("[DownloaderApp] Component rendering");
   const [show, setShow] = useState(false);
   const [posts, setPosts] = useState([]);
   const [selected, setSelected] = useState(new Set());
@@ -80,12 +77,6 @@ export default function DownloaderApp() {
 
     // If post has no valid timestamp, filter it out when time filter is active
     if (!postTime || postTime === 0) {
-      console.log(
-        `[Filter] Post has no timestamp, filtering out: ${post.id?.substring(
-          0,
-          20
-        )}`
-      );
       return false;
     }
 
@@ -94,14 +85,6 @@ export default function DownloaderApp() {
 
     // Calculate the cutoff time (now minus filter duration)
     const cutoffTime = now - filterSeconds;
-
-    console.log(
-      `[Filter] Time check - Post time: ${new Date(
-        postTime * 1000
-      ).toLocaleString()}, Cutoff: ${new Date(
-        cutoffTime * 1000
-      ).toLocaleString()}, Age: ${Math.floor(postAge / 60)}min`
-    );
 
     // Post passes if it was posted AFTER the cutoff time (within the time range)
     // In other words: postTime must be >= cutoffTime
@@ -143,17 +126,11 @@ export default function DownloaderApp() {
 
       // Check time filter
       if (!passesTimeFilter(post)) {
-        console.log(
-          `[Filter] Time filter removed post: ${post.id.substring(0, 20)}`
-        );
         return false;
       }
 
       // Check keyword filter
       if (!passesKeywordFilter(post)) {
-        console.log(
-          `[Filter] Keyword filter removed post: ${post.id.substring(0, 20)}`
-        );
         return false;
       }
 
@@ -162,8 +139,6 @@ export default function DownloaderApp() {
   };
 
   useEffect(() => {
-    console.log("[DownloaderApp] useEffect mounted");
-
     // Listen for messages from page script
     const handleMessage = (event) => {
       if (event.source !== window) return;
@@ -294,7 +269,6 @@ export default function DownloaderApp() {
     if (window.confirm("Are you sure you want to clear all detected posts?")) {
       setPosts([]);
       setSelected(new Set());
-      console.log("[DownloaderApp] All posts cleared");
     }
   };
 
@@ -412,7 +386,6 @@ export default function DownloaderApp() {
   };
 
   if (!show) {
-    console.log("[DownloaderApp] Rendering toggle button");
     return (
       <div className="fb-dl-toggle" style={{ pointerEvents: "auto" }}>
         <button className="fb-dl-toggle-btn" onClick={() => setShow(true)}>

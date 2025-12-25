@@ -2,10 +2,6 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import DownloaderApp from "./views/DownloaderApp";
 
-console.log("[Facebook Downloader] Content script START");
-console.log("[Facebook Downloader] Location:", window.location.href);
-console.log("[Facebook Downloader] Document state:", document.readyState);
-
 // Check if extension context is valid
 function isExtensionContextValid() {
   try {
@@ -43,10 +39,6 @@ function injectPageScript() {
     const target = document.head || document.documentElement;
     if (target) {
       target.appendChild(script);
-      console.log(
-        "[Facebook Downloader] GraphQL interceptor element added to",
-        target.tagName
-      );
     }
   } catch (error) {
     console.error(
@@ -63,8 +55,6 @@ window.addEventListener("message", (event) => {
   const message = event.data;
 
   if (message && message.__EXT__ === true) {
-    console.log("[Facebook Downloader] Message from page:", message.type);
-
     if (!isExtensionContextValid()) {
       console.error("[Facebook Downloader] ❌ Extension context invalid!");
       return;
@@ -76,10 +66,6 @@ window.addEventListener("message", (event) => {
         payload: message.payload,
       })
       .then((response) => {
-        console.log(
-          "[Facebook Downloader] Response from background:",
-          response
-        );
         if (response) {
           window.postMessage(
             {
@@ -99,7 +85,6 @@ window.addEventListener("message", (event) => {
 
 // Listen for messages from background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log("[Facebook Downloader] Message from background:", message.type);
   window.postMessage(
     {
       __EXT__: true,
@@ -114,15 +99,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Create UI
 function initializeUI() {
-  console.log("[Facebook Downloader] Initializing UI...");
-
   if (!document.body) {
     setTimeout(initializeUI, 100);
     return;
   }
 
   if (document.getElementById("fb-downloader-root")) {
-    console.log("[Facebook Downloader] UI already initialized");
     return;
   }
 
@@ -134,29 +116,16 @@ function initializeUI() {
     container.style.cssText =
       "all: initial; * { all: unset; } position: fixed !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; pointer-events: none !important; z-index: 2147483647 !important;";
 
-    console.log("[Facebook Downloader] Appending container to body");
     document.body.appendChild(container);
 
-    console.log("[Facebook Downloader] Creating React root");
     const root = createRoot(container);
 
-    console.log("[Facebook Downloader] Rendering React app");
     root.render(<DownloaderApp />);
-
-    console.log("[Facebook Downloader] ✅ UI initialized successfully");
 
     setTimeout(() => {
       const check = document.getElementById("fb-downloader-root");
-      console.log(
-        "[Facebook Downloader] DOM check:",
-        check ? "✅ Found" : "❌ Not found"
-      );
 
       const button = document.querySelector(".fb-dl-toggle");
-      console.log(
-        "[Facebook Downloader] Button check:",
-        button ? "✅ Found" : "❌ Not found"
-      );
 
       if (button) {
         console.log("[Facebook Downloader] 🎉 Button is visible!");
