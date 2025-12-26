@@ -11,13 +11,14 @@ export default function DownloaderApp() {
   // Auto-scroll states
   const [isScrolling, setIsScrolling] = useState(false);
   const [scrollStatus, setScrollStatus] = useState("idle");
-  const [scrollSpeed, setScrollSpeed] = useState(500); // pixels per scroll
+  const [scrollSpeed, setScrollSpeed] = useState(2000); // pixels per scroll
 
   // Filter states
   const [timeFilter, setTimeFilter] = useState(""); // e.g., "10m", "2h", "1d"
   const [keywordFilter, setKeywordFilter] = useState(
-    "মাশাল্লাহ, বিক্রি, কেনা, সেল, বিক্রয়, মূল্য, দাম, বাসা লাগবে, একদাম, সিট লাগবে, প্রয়োজন, বাসা প্রয়োজন, প্রয়োজন, প্রয়োজান, ভারা লাগবে, ভারা লাগব, ভাড়া লাগব, কিনতে, বিক্রয়, Sell, welcome, নতুন সদস্য, মধু, সেলারি, Off topic, পার্ট টাইম, ভাইরাল_ভিডিও, রুম দরকার, দুধ, আমিন, অর্ডার, ডেইরি ফার্ম, ড্রেস, youtu.be, ওড়না, projon, নিয়োগ, সূরা, পড়াচ্ছি, কোচিং, সেকেন্ড হ্যান্ড, শুভ রাত্রি, ইনকাম, লাগবে, বিক্রয়, বাসা দরকার, সেল, ডেলিভারি, সোফা ক্লিনিং, সার্ভিস পেতে, follow back, 𝙁𝙤𝙡𝙡𝙤𝙬 𝘽𝙖𝙘𝙠, দোয়া, জাতীয় পাখি, দেশের, room dorkar, bmw, সরকার, মিল্ক শেক, হারিয়ে গেছে, নির্বাচন, আল্লাহ, প্রমোশনাল ভিডিও সার্ভিসিং, Offer, কাজ করে থাকি, বাংলাদেশে, Rent a car, RAM যুদ্ধ, ঈদের, Page, মেহেদী, ক্রিম, with a Facebook Post:, Sale, mAh, বেতন, teacher, পাইকারি, প্রাকটিকাল"
+    "স্বাগতম, মাশাল্লাহ, বিক্রি, কেনা, সেল, বিক্রয়, মূল্য, দাম, বাসা লাগবে, একদাম, সিট লাগবে, প্রয়োজন, বাসা প্রয়োজন, প্রয়োজন, প্রয়োজান, ভারা লাগবে, ভারা লাগব, ভাড়া লাগব, কিনতে, বিক্রয়, Sell, welcome, নতুন সদস্য, মধু, সেলারি, Off topic, পার্ট টাইম, ভাইরাল_ভিডিও, রুম দরকার, দুধ, আমিন, অর্ডার, ডেইরি ফার্ম, ড্রেস, youtu.be, ওড়না, projon, নিয়োগ, সূরা, পড়াচ্ছি, কোচিং, সেকেন্ড হ্যান্ড, শুভ রাত্রি, ইনকাম, লাগবে, বিক্রয়, বাসা দরকার, সেল, ডেলিভারি, সোফা ক্লিনিং,সার্ভিস পেতে,follow back,𝙁𝙤𝙡𝙡𝙤𝙬 𝘽𝙖𝙘𝙠,দোয়া,জাতীয় পাখি,দেশের,room dorkar, bmw,সরকার,মিল্ক শেক,হারিয়ে গেছে,নির্বাচন,আল্লাহ,প্রমোশনাল ভিডিও সার্ভিসিং ,Offer,কাজ করে থাকি,বাংলাদেশে,Rent a car, RAM যুদ্ধ,ঈদের,Page,মেহেদী,ক্রিম,with a Facebook Post:, Sale, mAh ,বেতন ,teacher,পাইকারি, প্রাকটিকাল"
   );
+  const [numberFilter, setNumberFilter] = useState(true);
 
   // Draggable states
   const [position, setPosition] = useState({ x: 0, y: 0 });
@@ -66,39 +67,57 @@ export default function DownloaderApp() {
 
     return value * (multipliers[unit] || 0);
   };
+  const normalizePostTime = (rawTime) => {
+    if (rawTime == null) return null;
+
+    // number
+    if (typeof rawTime === "number") {
+      if (rawTime > 1e12) return Math.floor(rawTime / 1000); // ms → sec
+      if (rawTime > 1e9) return rawTime; // sec
+      return null;
+    }
+
+    // string
+    if (typeof rawTime === "string") {
+      const s = rawTime.trim();
+      if (!s) return null;
+
+      // numeric string
+      if (/^\d+$/.test(s)) {
+        const n = Number(s);
+        if (n > 1e12) return Math.floor(n / 1000);
+        if (n > 1e9) return n;
+        return null;
+      }
+
+      // ISO / GraphQL datetime
+      let ms = Date.parse(s);
+      if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
+
+      // handle +0000 timezone (FB GraphQL format)
+      const fixed = s.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+      ms = Date.parse(fixed);
+      if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
+    }
+
+    return null;
+  };
 
   // Check if post passes time filter
   const passesTimeFilter = (post) => {
     const filterSeconds = parseTimeFilter(timeFilter);
-    if (!filterSeconds) return true; // No filter = pass all
+    if (!filterSeconds) return true;
+
+    const postTime = normalizePostTime(post.createdTime);
+    if (!postTime) return false;
 
     const now = Math.floor(Date.now() / 1000);
-    const postTime = post.createdTime || 0;
+    const ageSeconds = now - postTime;
 
-    // If post has no valid timestamp, filter it out when time filter is active
-    if (!postTime || postTime === 0) {
-      return false;
-    }
+    // invalid or future timestamps
+    if (ageSeconds < 0 || ageSeconds > 60 * 60 * 24 * 365) return false;
 
-    // Calculate how long ago the post was created
-    const postAge = now - postTime;
-
-    // Calculate the cutoff time (now minus filter duration)
-    const cutoffTime = now - filterSeconds;
-
-    // Post passes if it was posted AFTER the cutoff time (within the time range)
-    // In other words: postTime must be >= cutoffTime
-    const passes = postTime >= cutoffTime;
-
-    if (!passes) {
-      console.log(
-        `[Filter] ⏭️ Post too old: ${Math.floor(
-          postAge / 60
-        )}min ago (limit: ${Math.floor(filterSeconds / 60)}min)`
-      );
-    }
-
-    return passes;
+    return ageSeconds <= filterSeconds;
   };
 
   // Check if post passes keyword filter
@@ -118,6 +137,24 @@ export default function DownloaderApp() {
     return !keywords.some((keyword) => postText.includes(keyword));
   };
 
+  // Check if post passes number filter
+  const passesNumberFilter = (post) => {
+    if (!numberFilter) return true;
+
+    const text = post.text || "";
+    if (typeof text !== "string") return true;
+
+    // Remove hyphens and spaces
+    const cleanedText = text.replace(/[- ]/g, "");
+
+    // Check for Bangladeshi phone numbers (01 followed by 7-10 digits)
+    const numberPattern = /01\d{7,10}/g;
+    const matches = cleanedText.match(numberPattern);
+
+    // Filter out posts that contain phone numbers
+    return !matches || matches.length === 0;
+  };
+
   // Apply all filters to posts
   const filterPosts = (postsArray) => {
     return postsArray.filter((post) => {
@@ -131,6 +168,11 @@ export default function DownloaderApp() {
 
       // Check keyword filter
       if (!passesKeywordFilter(post)) {
+        return false;
+      }
+
+      // Check number filter
+      if (!passesNumberFilter(post)) {
         return false;
       }
 
@@ -179,7 +221,7 @@ export default function DownloaderApp() {
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [timeFilter, keywordFilter]);
+  }, [timeFilter, keywordFilter, numberFilter]);
 
   // Dragging functionality
   useEffect(() => {
@@ -358,13 +400,27 @@ export default function DownloaderApp() {
     return date.toLocaleDateString() + " " + date.toLocaleTimeString();
   };
 
+  // Format relative time (e.g., "1m ago", "2h ago")
+  const formatRelativeTime = (timestamp) => {
+    if (!timestamp) return "Unknown";
+
+    const now = Math.floor(Date.now() / 1000);
+    const secondsAgo = now - timestamp;
+
+    if (secondsAgo < 60) return `${Math.floor(secondsAgo)}s ago`;
+    if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)}m ago`;
+    if (secondsAgo < 86400) return `${Math.floor(secondsAgo / 3600)}h ago`;
+    return `${Math.floor(secondsAgo / 86400)}d ago`;
+  };
+
   // Calculate time progress (how old is the post relative to the filter)
   const getTimeProgress = (timestamp) => {
     const filterSeconds = parseTimeFilter(timeFilter);
-    if (!filterSeconds || !timestamp) return null;
+    const postTime = normalizePostTime(timestamp);
+    if (!filterSeconds || !postTime) return null;
 
     const now = Math.floor(Date.now() / 1000);
-    const postAge = now - timestamp;
+    const postAge = now - postTime;
 
     // Calculate percentage (0% = filter limit ago, 100% = just posted)
     // Invert it so NEW posts = 100% (full bar), OLD posts = 0% (empty bar)
@@ -471,11 +527,13 @@ export default function DownloaderApp() {
                 type="number"
                 value={scrollSpeed}
                 onChange={(e) =>
-                  setScrollSpeed(Math.max(100, parseInt(e.target.value) || 500))
+                  setScrollSpeed(
+                    Math.max(100, parseInt(e.target.value) || 2000)
+                  )
                 }
                 style={{ width: "70px" }}
                 min="100"
-                max="2000"
+                max="5000"
                 step="100"
               />
               px
@@ -514,6 +572,19 @@ export default function DownloaderApp() {
               style={{ width: "100%", fontSize: "12px" }}
               placeholder="Posts containing these keywords will be filtered out"
             />
+          </div>
+
+          <div className="fb-dl-filter-row">
+            <label
+              style={{ display: "flex", alignItems: "center", gap: "8px" }}
+            >
+              <input
+                type="checkbox"
+                checked={numberFilter}
+                onChange={(e) => setNumberFilter(e.target.checked)}
+              />
+              Filter out posts with phone numbers (01XXXXXXXXX)
+            </label>
           </div>
         </div>
 
@@ -608,7 +679,20 @@ export default function DownloaderApp() {
                         />
                       </td>
                       <td>{post.author || "Unknown"}</td>
-                      <td>{formatDate(post.createdTime)}</td>
+                      <td>
+                        <div style={{ fontSize: "12px" }}>
+                          <div>{formatDate(post.createdTime)}</div>
+                          <div
+                            style={{
+                              color: "#666",
+                              fontSize: "11px",
+                              marginTop: "2px",
+                            }}
+                          >
+                            {formatRelativeTime(post.createdTime)}
+                          </div>
+                        </div>
+                      </td>
                       {timeFilter && (
                         <td>
                           {timeProgress ? (

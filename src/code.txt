@@ -1,57 +1,8 @@
 
-===== ./types.js =====
-
-/**
- * Type definitions for the Facebook Post Downloader extension
- * (JSDoc style for JavaScript projects)
- */
-
-/**
- * @typedef {Object} Media
- * @property {'image' | 'video'} type - Type of media
- * @property {string} url - URL of the media file
- */
-
-/**
- * @typedef {Object} Post
- * @property {string} id - Unique post identifier
- * @property {string} [author] - Post author name
- * @property {number} [createdTime] - Unix timestamp
- * @property {string} [text] - Post text content
- * @property {string} [group] - Group name if posted in a group
- * @property {Media[]} media - Array of media attachments
- */
-
-/**
- * @typedef {Object} DownloadTask
- * @property {string} url - Download URL
- * @property {string} filename - Target filename with path
- * @property {string} postId - Associated post ID
- * @property {number} tabId - Tab ID for notifications
- * @property {number} retries - Number of retry attempts
- * @property {boolean} [isBlob] - Whether URL is a blob
- */
-
-/**
- * @typedef {Object} DownloadProgress
- * @property {number} completed - Number of completed downloads
- * @property {number} total - Total number of downloads
- */
-
-/**
- * @typedef {Object} ExtensionMessage
- * @property {boolean} __EXT__ - Extension message identifier
- * @property {string} type - Message type
- * @property {*} payload - Message payload
- */
-
-export {};
-
 
 ===== ./background\index.js =====
 
 // Background Service Worker
-console.log("[Background] Service worker starting...");
 
 const MAX_CONCURRENT_DOWNLOADS = 3;
 const downloadQueue = [];
@@ -59,13 +10,6 @@ const activeDownloads = new Map();
 
 // Message handler
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log(
-    "[Background] Received message:",
-    message.type,
-    "from tab:",
-    sender.tab?.id
-  );
-
   try {
     if (message.type === "DOWNLOAD") {
       handleDownload(message.payload, sender.tab.id);
@@ -82,14 +26,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true;
     } else if (message.type === "POSTS_DETECTED") {
-      console.log(
-        "[Background] Posts detected:",
-        message.payload?.posts?.length || 0
-      );
       sendResponse({ success: true, received: true });
       return true;
     } else {
-      console.log("[Background] Unknown message type:", message.type);
       sendResponse({ success: true, unknown: true });
       return true;
     }
@@ -102,12 +41,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Handle download request
 async function handleDownload(payload, tabId) {
-  console.log(
-    "[Background] Handling download for",
-    payload.posts?.length || 0,
-    "posts"
-  );
-
   const { posts } = payload;
 
   for (const post of posts) {
@@ -123,10 +56,9 @@ async function handleDownload(payload, tabId) {
       retries: 0,
       isBlob: true,
     });
-    console.log("[Background] Queued metadata file for post:", post.id);
 
     // Download media if post has any
-    if (post.media && post.media.length > 0) {
+    if (post.media && post.media.length >= 0) {
       for (let i = 0; i < post.media.length; i++) {
         const media = post.media[i];
         const downloadTask = {
@@ -137,30 +69,16 @@ async function handleDownload(payload, tabId) {
           retries: 0,
         };
         downloadQueue.push(downloadTask);
-        console.log(
-          "[Background] Queued media download:",
-          downloadTask.filename
-        );
       }
     } else {
-      console.log(
-        "[Background] Post has no media, only creating metadata file"
-      );
     }
   }
 
-  console.log("[Background] Total in queue:", downloadQueue.length);
   processQueue();
 }
 
 // Process download queue
 async function processQueue() {
-  console.log("[Background] Processing queue...", {
-    queue: downloadQueue.length,
-    active: activeDownloads.size,
-    maxConcurrent: MAX_CONCURRENT_DOWNLOADS,
-  });
-
   while (
     downloadQueue.length > 0 &&
     activeDownloads.size < MAX_CONCURRENT_DOWNLOADS
@@ -172,8 +90,6 @@ async function processQueue() {
 
 // Start individual download
 async function startDownload(task) {
-  console.log("[Background] Starting download:", task.filename);
-
   try {
     const downloadId = await chrome.downloads.download({
       url: task.url,
@@ -181,7 +97,6 @@ async function startDownload(task) {
       conflictAction: "uniquify",
     });
 
-    console.log("[Background] Download started with ID:", downloadId);
     activeDownloads.set(downloadId, task);
 
     // Notify content script
@@ -202,7 +117,6 @@ async function startDownload(task) {
     // Retry logic
     if (task.retries < 3) {
       task.retries++;
-      console.log("[Background] Retrying download (attempt", task.retries, ")");
       downloadQueue.push(task);
       setTimeout(processQueue, 2000);
     } else {
@@ -226,7 +140,6 @@ chrome.downloads.onChanged.addListener((delta) => {
   if (delta.state && delta.state.current === "complete") {
     const task = activeDownloads.get(delta.id);
     if (task) {
-      console.log("[Background] Download completed:", task.filename);
       activeDownloads.delete(delta.id);
 
       // Cleanup blob URLs
@@ -321,8 +234,6 @@ function updateBadge(count) {
   }
 }
 
-console.log("[Background] Service worker initialized and ready!");
-
 // Self-test on startup
 setTimeout(() => {
   console.log("[Background] Self-test: Service worker is alive");
@@ -334,10 +245,6 @@ setTimeout(() => {
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import DownloaderApp from "./views/DownloaderApp";
-
-console.log("[Facebook Downloader] Content script START");
-console.log("[Facebook Downloader] Location:", window.location.href);
-console.log("[Facebook Downloader] Document state:", document.readyState);
 
 // Check if extension context is valid
 function isExtensionContextValid() {
@@ -376,10 +283,6 @@ function injectPageScript() {
     const target = document.head || document.documentElement;
     if (target) {
       target.appendChild(script);
-      console.log(
-        "[Facebook Downloader] GraphQL interceptor element added to",
-        target.tagName
-      );
     }
   } catch (error) {
     console.error(
@@ -396,8 +299,6 @@ window.addEventListener("message", (event) => {
   const message = event.data;
 
   if (message && message.__EXT__ === true) {
-    console.log("[Facebook Downloader] Message from page:", message.type);
-
     if (!isExtensionContextValid()) {
       console.error("[Facebook Downloader] ❌ Extension context invalid!");
       return;
@@ -409,10 +310,6 @@ window.addEventListener("message", (event) => {
         payload: message.payload,
       })
       .then((response) => {
-        console.log(
-          "[Facebook Downloader] Response from background:",
-          response
-        );
         if (response) {
           window.postMessage(
             {
@@ -432,7 +329,6 @@ window.addEventListener("message", (event) => {
 
 // Listen for messages from background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log("[Facebook Downloader] Message from background:", message.type);
   window.postMessage(
     {
       __EXT__: true,
@@ -447,15 +343,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Create UI
 function initializeUI() {
-  console.log("[Facebook Downloader] Initializing UI...");
-
   if (!document.body) {
     setTimeout(initializeUI, 100);
     return;
   }
 
   if (document.getElementById("fb-downloader-root")) {
-    console.log("[Facebook Downloader] UI already initialized");
     return;
   }
 
@@ -467,29 +360,16 @@ function initializeUI() {
     container.style.cssText =
       "all: initial; * { all: unset; } position: fixed !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; pointer-events: none !important; z-index: 2147483647 !important;";
 
-    console.log("[Facebook Downloader] Appending container to body");
     document.body.appendChild(container);
 
-    console.log("[Facebook Downloader] Creating React root");
     const root = createRoot(container);
 
-    console.log("[Facebook Downloader] Rendering React app");
     root.render(<DownloaderApp />);
-
-    console.log("[Facebook Downloader] ✅ UI initialized successfully");
 
     setTimeout(() => {
       const check = document.getElementById("fb-downloader-root");
-      console.log(
-        "[Facebook Downloader] DOM check:",
-        check ? "✅ Found" : "❌ Not found"
-      );
 
       const button = document.querySelector(".fb-dl-toggle");
-      console.log(
-        "[Facebook Downloader] Button check:",
-        button ? "✅ Found" : "❌ Not found"
-      );
 
       if (button) {
         console.log("[Facebook Downloader] 🎉 Button is visible!");
@@ -525,379 +405,6 @@ if (!isExtensionContextValid()) {
 console.log("[Facebook Downloader] Content script END");
 
 
-===== ./content\views\DownloaderApp.css =====
-
-.fb-dl-toggle {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
-  z-index: 999999;
-}
-
-.fb-dl-toggle-btn {
-  background: #1877f2;
-  color: white;
-  border: none;
-  border-radius: 50%;
-  width: 60px;
-  height: 60px;
-  font-size: 24px;
-  cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  transition: all 0.3s;
-}
-
-.fb-dl-toggle-btn:hover {
-  background: #145dbf;
-  transform: scale(1.1);
-}
-
-.fb-dl-container {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 999999;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
-    Arial, sans-serif;
-}
-
-.fb-dl-panel {
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-  width: 900px;
-  max-width: 90vw;
-  max-height: 80vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.fb-dl-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 20px;
-  border-bottom: 1px solid #e4e6eb;
-  background: #f5f6f7;
-}
-
-.fb-dl-header h2 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #1c1e21;
-}
-
-.fb-dl-close {
-  background: none;
-  border: none;
-  font-size: 24px;
-  cursor: pointer;
-  color: #65676b;
-  padding: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  transition: background 0.2s;
-}
-
-.fb-dl-close:hover {
-  background: #e4e6eb;
-}
-
-.fb-dl-stats {
-  display: flex;
-  gap: 20px;
-  padding: 12px 20px;
-  background: #f5f6f7;
-  border-bottom: 1px solid #e4e6eb;
-  font-size: 14px;
-  color: #65676b;
-}
-
-.fb-dl-progress {
-  padding: 12px 20px;
-  background: #e7f3ff;
-  border-bottom: 1px solid #e4e6eb;
-}
-
-.fb-dl-progress-bar {
-  width: 100%;
-  height: 8px;
-  background: #d0e7ff;
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 8px;
-}
-
-.fb-dl-progress-fill {
-  height: 100%;
-  background: #1877f2;
-  transition: width 0.3s;
-}
-
-.fb-dl-progress span {
-  font-size: 13px;
-  color: #1877f2;
-  font-weight: 500;
-}
-
-.fb-dl-controls {
-  display: flex;
-  gap: 12px;
-  padding: 16px 20px;
-  border-bottom: 1px solid #e4e6eb;
-}
-
-.fb-dl-controls button {
-  padding: 8px 16px;
-  border: 1px solid #ccd0d5;
-  background: white;
-  border-radius: 6px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.fb-dl-controls button:hover:not(:disabled) {
-  background: #f5f6f7;
-}
-
-.fb-dl-controls button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.fb-dl-download-btn {
-  background: #1877f2 !important;
-  color: white !important;
-  border: none !important;
-}
-
-.fb-dl-download-btn:hover:not(:disabled) {
-  background: #145dbf !important;
-}
-
-.fb-dl-posts {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0;
-}
-
-.fb-dl-empty {
-  padding: 40px 20px;
-  text-align: center;
-  color: #65676b;
-  font-size: 14px;
-}
-
-.fb-dl-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-}
-
-.fb-dl-table thead {
-  background: #f5f6f7;
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.fb-dl-table th {
-  padding: 12px 16px;
-  text-align: left;
-  font-weight: 600;
-  color: #1c1e21;
-  border-bottom: 1px solid #e4e6eb;
-}
-
-.fb-dl-table td {
-  padding: 12px 16px;
-  border-bottom: 1px solid #e4e6eb;
-  color: #1c1e21;
-}
-
-.fb-dl-table tbody tr:hover {
-  background: #f5f6f7;
-}
-
-.fb-dl-table tbody tr.selected {
-  background: #e7f3ff;
-}
-
-.fb-dl-text-preview {
-  max-width: 300px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #65676b;
-}
-
-.fb-dl-media-types {
-  margin-left: 4px;
-  font-size: 12px;
-}
-
-input[type="checkbox"] {
-  cursor: pointer;
-  width: 18px;
-  height: 18px;
-}
-
-/* Auto-scroll section */
-.fb-dl-autoscroll {
-  padding: 12px 20px;
-  background: #e7f3ff;
-  border-bottom: 1px solid #e4e6eb;
-}
-
-.fb-dl-section-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1c1e21;
-  margin-bottom: 8px;
-}
-
-.fb-dl-scroll-controls {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.fb-dl-btn-start {
-  background: #4caf50 !important;
-  color: white !important;
-  border: none !important;
-  padding: 6px 12px;
-  border-radius: 4px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.fb-dl-btn-start:disabled {
-  background: #9e9e9e !important;
-  cursor: not-allowed;
-}
-
-.fb-dl-btn-pause {
-  background: #ff9800 !important;
-  color: white !important;
-  border: none !important;
-  padding: 6px 12px;
-  border-radius: 4px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.fb-dl-btn-pause:disabled {
-  background: #9e9e9e !important;
-  cursor: not-allowed;
-}
-
-.fb-dl-btn-stop {
-  background: #f44336 !important;
-  color: white !important;
-  border: none !important;
-  padding: 6px 12px;
-  border-radius: 4px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.fb-dl-btn-stop:disabled {
-  background: #9e9e9e !important;
-  cursor: not-allowed;
-}
-
-.fb-dl-scroll-status {
-  margin-left: auto;
-  font-size: 13px;
-  color: #65676b;
-}
-
-.fb-dl-scroll-status strong {
-  color: #1877f2;
-  text-transform: uppercase;
-}
-
-/* Filters section */
-.fb-dl-filters {
-  padding: 12px 20px;
-  background: #f5f6f7;
-  border-bottom: 1px solid #e4e6eb;
-}
-
-.fb-dl-filter-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 12px;
-  margin-top: 8px;
-}
-
-.fb-dl-filter-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.fb-dl-filter-item label {
-  font-size: 12px;
-  font-weight: 500;
-  color: #65676b;
-}
-
-.fb-dl-filter-item input[type="text"],
-.fb-dl-filter-item input[type="number"],
-.fb-dl-filter-item select {
-  padding: 6px 8px;
-  border: 1px solid #ccd0d5;
-  border-radius: 4px;
-  font-size: 13px;
-  background: white;
-  color: #1c1e21;
-}
-
-.fb-dl-filter-item input[type="text"]:focus,
-.fb-dl-filter-item input[type="number"]:focus,
-.fb-dl-filter-item select:focus {
-  outline: none;
-  border-color: #1877f2;
-  box-shadow: 0 0 0 2px rgba(24, 119, 242, 0.1);
-}
-
-.fb-dl-btn-clear {
-  padding: 6px 12px;
-  background: #f44336;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  font-size: 13px;
-  cursor: pointer;
-  margin-top: 18px;
-}
-
-.fb-dl-btn-clear:hover {
-  background: #d32f2f;
-}
-
-/* Export buttons */
-.fb-dl-export-btn {
-  background: #4caf50 !important;
-  color: white !important;
-  border: none !important;
-}
-
-.fb-dl-export-btn:hover:not(:disabled) {
-  background: #45a049 !important;
-}
-
-.fb-dl-export-btn:disabled {
-  background: #9e9e9e !important;
-}
 
 
 ===== ./content\views\DownloaderApp.jsx =====
@@ -905,28 +412,23 @@ input[type="checkbox"] {
 import { useState, useEffect, useRef } from "react";
 import "./DownloaderApp.css";
 
-console.log("[DownloaderApp] Component loading");
-
 export default function DownloaderApp() {
-  console.log("[DownloaderApp] Component rendering");
   const [show, setShow] = useState(false);
   const [posts, setPosts] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
 
-  // Auto-scroll states
   const [isScrolling, setIsScrolling] = useState(false);
   const [scrollStatus, setScrollStatus] = useState("idle");
-  const [scrollSpeed, setScrollSpeed] = useState(500); // pixels per scroll
+  const [scrollSpeed, setScrollSpeed] = useState(2000);
 
-  // Filter states
-  const [timeFilter, setTimeFilter] = useState(""); // e.g., "10m", "2h", "1d"
+  const [timeFilter, setTimeFilter] = useState("");
   const [keywordFilter, setKeywordFilter] = useState(
-    "মাশাল্লাহ, বিক্রি, কেনা, সেল, বিক্রয়, মূল্য, দাম, বাসা লাগবে, একদাম, সিট লাগবে, প্রয়োজন, বাসা প্রয়োজন, প্রয়োজন, প্রয়োজান, ভারা লাগবে, ভারা লাগব, ভাড়া লাগব, কিনতে, বিক্রয়, Sell, welcome, নতুন সদস্য, মধু, সেলারি, Off topic, পার্ট টাইম, ভাইরাল_ভিডিও, রুম দরকার, দুধ, আমিন, অর্ডার, ডেইরি ফার্ম, ড্রেস, youtu.be, ওড়না, projon, নিয়োগ, সূরা, পড়াচ্ছি, কোচিং, সেকেন্ড হ্যান্ড, শুভ রাত্রি, ইনকাম, লাগবে, বিক্রয়, বাসা দরকার, সেল, ডেলিভারি, সোফা ক্লিনিং, সার্ভিস পেতে, follow back, 𝙁𝙤𝙡𝙡𝙤𝙬 𝘽𝙖𝙘𝙠, দোয়া, জাতীয় পাখি, দেশের, room dorkar, bmw, সরকার, মিল্ক শেক, হারিয়ে গেছে, নির্বাচন, আল্লাহ, প্রমোশনাল ভিডিও সার্ভিসিং, Offer, কাজ করে থাকি, বাংলাদেশে, Rent a car, RAM যুদ্ধ, ঈদের, Page, মেহেদী, ক্রিম, with a Facebook Post:, Sale, mAh, বেতন, teacher, পাইকারি, প্রাকটিকাল"
+    "স্বাগতম, মাশাল্লাহ, বিক্রি, কেনা, সেল, বিক্রয়, মূল্য, দাম, বাসা লাগবে, একদাম, সিট লাগবে, প্রয়োজন, বাসা প্রয়োজন, প্রয়োজন, প্রয়োজান, ভারা লাগবে, ভারা লাগব, ভাড়া লাগব, কিনতে, বিক্রয়, Sell, welcome, নতুন সদস্য, মধু, সেলারি, Off topic, পার্ট টাইম, ভাইরাল_ভিডিও, রুম দরকার, দুধ, আমিন, অর্ডার, ডেইরি ফার্ম, ড্রেস, youtu.be, ওড়না, projon, নিয়োগ, সূরা, পড়াচ্ছি, কোচিং, সেকেন্ড হ্যান্ড, শুভ রাত্রি, ইনকাম, লাগবে, বিক্রয়, বাসা দরকার, সেল, ডেলিভারি, সোফা ক্লিনিং,সার্ভিস পেতে,follow back,𝙁𝙤𝙡𝙡𝙤𝙬 𝘽𝙖𝙘𝙠,দোয়া,জাতীয় পাখি,দেশের,room dorkar, bmw,সরকার,মিল্ক শেক,হারিয়ে গেছে,নির্বাচন,আল্লাহ,প্রমোশনাল ভিডিও সার্ভিসিং ,Offer,কাজ করে থাকি,বাংলাদেশে,Rent a car, RAM যুদ্ধ,ঈদের,Page,মেহেদী,ক্রিম,with a Facebook Post:, Sale, mAh ,বেতন ,teacher,পাইকারি, প্রাকটিকাল"
   );
+  const [numberFilter, setNumberFilter] = useState(true);
 
-  // Draggable states
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -935,10 +437,8 @@ export default function DownloaderApp() {
   const scrollIntervalRef = useRef(null);
   const panelRef = useRef(null);
 
-  // Center the panel on first show
   useEffect(() => {
     if (show && !isInitialized && panelRef.current) {
-      // Use setTimeout to ensure the panel is fully rendered
       setTimeout(() => {
         const panel = panelRef.current;
         if (!panel) return;
@@ -954,7 +454,6 @@ export default function DownloaderApp() {
     }
   }, [show, isInitialized]);
 
-  // Parse time filter (e.g., "10m" -> 600 seconds)
   const parseTimeFilter = (filterStr) => {
     if (!filterStr || filterStr.trim() === "") return null;
 
@@ -974,55 +473,21 @@ export default function DownloaderApp() {
     return value * (multipliers[unit] || 0);
   };
 
-  // Check if post passes time filter
   const passesTimeFilter = (post) => {
     const filterSeconds = parseTimeFilter(timeFilter);
-    if (!filterSeconds) return true; // No filter = pass all
+    if (!filterSeconds) return true;
+
+    const postTime = post.createdTime;
+    if (!postTime) return false;
 
     const now = Math.floor(Date.now() / 1000);
-    const postTime = post.createdTime || 0;
+    const ageSeconds = now - postTime;
 
-    // If post has no valid timestamp, filter it out when time filter is active
-    if (!postTime || postTime === 0) {
-      console.log(
-        `[Filter] Post has no timestamp, filtering out: ${post.id?.substring(
-          0,
-          20
-        )}`
-      );
-      return false;
-    }
+    if (ageSeconds < 0 || ageSeconds > 60 * 60 * 24 * 365) return false;
 
-    // Calculate how long ago the post was created
-    const postAge = now - postTime;
-
-    // Calculate the cutoff time (now minus filter duration)
-    const cutoffTime = now - filterSeconds;
-
-    console.log(
-      `[Filter] Time check - Post time: ${new Date(
-        postTime * 1000
-      ).toLocaleString()}, Cutoff: ${new Date(
-        cutoffTime * 1000
-      ).toLocaleString()}, Age: ${Math.floor(postAge / 60)}min`
-    );
-
-    // Post passes if it was posted AFTER the cutoff time (within the time range)
-    // In other words: postTime must be >= cutoffTime
-    const passes = postTime >= cutoffTime;
-
-    if (!passes) {
-      console.log(
-        `[Filter] ⏭️ Post too old: ${Math.floor(
-          postAge / 60
-        )}min ago (limit: ${Math.floor(filterSeconds / 60)}min)`
-      );
-    }
-
-    return passes;
+    return ageSeconds <= filterSeconds;
   };
 
-  // Check if post passes keyword filter
   const passesKeywordFilter = (post) => {
     if (!keywordFilter.trim()) return true;
 
@@ -1035,29 +500,38 @@ export default function DownloaderApp() {
 
     const postText = (post.text || "").toLowerCase();
 
-    // Return false if ANY keyword is found (filter out)
     return !keywords.some((keyword) => postText.includes(keyword));
   };
 
-  // Apply all filters to posts
+  const passesNumberFilter = (post) => {
+    if (!numberFilter) return true;
+
+    const text = post.text || "";
+    if (typeof text !== "string") return true;
+
+    const cleanedText = text.replace(/[- ]/g, "");
+
+    const numberPattern = /01\d{7,10}/g;
+    const matches = cleanedText.match(numberPattern);
+
+    return !matches || matches.length === 0;
+  };
+
   const filterPosts = (postsArray) => {
+    // console.log("Filtering posts with current filters...");
+    // console.log("Time Filter:", postsArray);
     return postsArray.filter((post) => {
-      // Must have text
       if (!post.text || post.text.trim().length === 0) return false;
 
-      // Check time filter
       if (!passesTimeFilter(post)) {
-        console.log(
-          `[Filter] Time filter removed post: ${post.id.substring(0, 20)}`
-        );
         return false;
       }
 
-      // Check keyword filter
       if (!passesKeywordFilter(post)) {
-        console.log(
-          `[Filter] Keyword filter removed post: ${post.id.substring(0, 20)}`
-        );
+        return false;
+      }
+
+      if (!passesNumberFilter(post)) {
         return false;
       }
 
@@ -1066,9 +540,6 @@ export default function DownloaderApp() {
   };
 
   useEffect(() => {
-    console.log("[DownloaderApp] useEffect mounted");
-
-    // Listen for messages from page script
     const handleMessage = (event) => {
       if (event.source !== window) return;
       const message = event.data;
@@ -1077,9 +548,6 @@ export default function DownloaderApp() {
         switch (message.type) {
           case "POSTS_DETECTED":
             const filteredPosts = filterPosts(message.payload.posts);
-            console.log(
-              `[DownloaderApp] Filtered ${message.payload.posts.length} posts down to ${filteredPosts.length} posts`
-            );
             setPosts(filteredPosts);
             break;
           case "DOWNLOAD_STARTED":
@@ -1108,9 +576,8 @@ export default function DownloaderApp() {
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [timeFilter, keywordFilter]);
+  }, [timeFilter, keywordFilter, numberFilter]);
 
-  // Dragging functionality
   useEffect(() => {
     const handleMouseMove = (e) => {
       if (!isDragging) return;
@@ -1137,12 +604,9 @@ export default function DownloaderApp() {
   }, [isDragging, dragOffset]);
 
   const handleMouseDown = (e) => {
-    // Only allow dragging from the header, not from buttons or inputs
     const target = e.target;
     if (!target.closest(".fb-dl-header")) return;
-    if (target.closest(".fb-dl-close")) return;
-    if (target.tagName === "BUTTON") return;
-    if (target.tagName === "INPUT") return;
+    if (target.tagName === "BUTTON" || target.tagName === "INPUT") return;
 
     const panel = panelRef.current;
     if (!panel) return;
@@ -1153,10 +617,9 @@ export default function DownloaderApp() {
       y: e.clientY - rect.top,
     });
     setIsDragging(true);
-    e.preventDefault(); // Prevent text selection while dragging
+    e.preventDefault();
   };
 
-  // Auto-scroll functionality
   const startAutoScroll = () => {
     setScrollStatus("running");
     setIsScrolling(true);
@@ -1198,7 +661,6 @@ export default function DownloaderApp() {
     if (window.confirm("Are you sure you want to clear all detected posts?")) {
       setPosts([]);
       setSelected(new Set());
-      console.log("[DownloaderApp] All posts cleared");
     }
   };
 
@@ -1282,41 +744,42 @@ export default function DownloaderApp() {
     URL.revokeObjectURL(url);
   };
 
-  const formatDate = (timestamp) => {
+  const formatTime = (timestamp, type = "full") => {
     if (!timestamp) return "Unknown";
-    const date = new Date(timestamp * 1000);
-    return date.toLocaleDateString() + " " + date.toLocaleTimeString();
-  };
 
-  // Calculate time progress (how old is the post relative to the filter)
-  const getTimeProgress = (timestamp) => {
-    const filterSeconds = parseTimeFilter(timeFilter);
-    if (!filterSeconds || !timestamp) return null;
+    const date = new Date(timestamp * 1000);
+
+    if (type === "full") {
+      return date.toLocaleDateString() + " " + date.toLocaleTimeString();
+    }
 
     const now = Math.floor(Date.now() / 1000);
-    const postAge = now - timestamp;
+    const secondsAgo = now - timestamp;
 
-    // Calculate percentage (0% = filter limit ago, 100% = just posted)
-    // Invert it so NEW posts = 100% (full bar), OLD posts = 0% (empty bar)
+    if (secondsAgo < 60) return `${Math.floor(secondsAgo)}s ago`;
+    if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)}m ago`;
+    if (secondsAgo < 86400) return `${Math.floor(secondsAgo / 3600)}h ago`;
+    return `${Math.floor(secondsAgo / 86400)}d ago`;
+  };
+
+  const getTimeProgress = (timestamp) => {
+    const filterSeconds = parseTimeFilter(timeFilter);
+    const postTime = timestamp;
+    if (!filterSeconds || !postTime) return null;
+
+    const now = Math.floor(Date.now() / 1000);
+    const postAge = now - postTime;
+
     const percentage = Math.max(0, 100 - (postAge / filterSeconds) * 100);
 
     return {
       percentage,
       age: postAge,
-      ageText: formatTimeAge(postAge),
+      ageText: formatTime(timestamp, "relative"),
     };
   };
 
-  // Format age in human-readable form
-  const formatTimeAge = (seconds) => {
-    if (seconds < 60) return `${Math.floor(seconds)}s ago`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    return `${Math.floor(seconds / 86400)}d ago`;
-  };
-
   if (!show) {
-    console.log("[DownloaderApp] Rendering toggle button");
     return (
       <div className="fb-dl-toggle" style={{ pointerEvents: "auto" }}>
         <button className="fb-dl-toggle-btn" onClick={() => setShow(true)}>
@@ -1357,7 +820,6 @@ export default function DownloaderApp() {
           </button>
         </div>
 
-        {/* Auto-scroll controls */}
         <div className="fb-dl-autoscroll">
           <div className="fb-dl-section-title">🔄 Auto-Scroll</div>
           <div className="fb-dl-scroll-controls">
@@ -1402,11 +864,13 @@ export default function DownloaderApp() {
                 type="number"
                 value={scrollSpeed}
                 onChange={(e) =>
-                  setScrollSpeed(Math.max(100, parseInt(e.target.value) || 500))
+                  setScrollSpeed(
+                    Math.max(100, parseInt(e.target.value) || 2000)
+                  )
                 }
                 style={{ width: "70px" }}
                 min="100"
-                max="2000"
+                max="5000"
                 step="100"
               />
               px
@@ -1414,7 +878,6 @@ export default function DownloaderApp() {
           </div>
         </div>
 
-        {/* Filters */}
         <div className="fb-dl-filters">
           <div className="fb-dl-section-title">🔍 Filters</div>
 
@@ -1445,6 +908,19 @@ export default function DownloaderApp() {
               style={{ width: "100%", fontSize: "12px" }}
               placeholder="Posts containing these keywords will be filtered out"
             />
+          </div>
+
+          <div className="fb-dl-filter-row">
+            <label
+              style={{ display: "flex", alignItems: "center", gap: "8px" }}
+            >
+              <input
+                type="checkbox"
+                checked={numberFilter}
+                onChange={(e) => setNumberFilter(e.target.checked)}
+              />
+              Filter out posts with phone numbers (01XXXXXXXXX)
+            </label>
           </div>
         </div>
 
@@ -1539,7 +1015,20 @@ export default function DownloaderApp() {
                         />
                       </td>
                       <td>{post.author || "Unknown"}</td>
-                      <td>{formatDate(post.createdTime)}</td>
+                      <td>
+                        <div style={{ fontSize: "12px" }}>
+                          <div>{formatTime(post.createdTime, "full")}</div>
+                          <div
+                            style={{
+                              color: "#666",
+                              fontSize: "11px",
+                              marginTop: "2px",
+                            }}
+                          >
+                            {formatTime(post.createdTime, "relative")}
+                          </div>
+                        </div>
+                      </td>
                       {timeFilter && (
                         <td>
                           {timeProgress ? (
@@ -1615,17 +1104,9 @@ export default function DownloaderApp() {
 
 ===== ./injected\graphql-interceptor.js =====
 
-// ENHANCED DIAGNOSTIC VERSION - Comprehensive logging
-console.log("[FB Downloader] 🔬 ENHANCED DIAGNOSTIC VERSION LOADING...");
-
 const detectedPosts = new Map();
-let requestCount = 0;
 
-/**
- * Parse NDJSON response text into array of objects.
- */
 function parseNdjson(text) {
-  // Strip common anti-JSON prefixes
   if (text.startsWith("for (;;);")) text = text.slice("for (;;);".length);
   if (text.startsWith(")]}'")) {
     const firstNewline = text.indexOf("\n");
@@ -1639,16 +1120,14 @@ function parseNdjson(text) {
     try {
       result.push(JSON.parse(trimmed));
     } catch {
-      // skip invalid JSON lines
+      continue;
     }
   }
   return result;
 }
 
-// Fetch interceptor
 if (!window.__fbDownloaderFetchPatched) {
   window.__fbDownloaderFetchPatched = true;
-  console.log("[FB Downloader] 🔧 Patching fetch...");
 
   const originalFetch = window.fetch;
 
@@ -1668,44 +1147,25 @@ if (!window.__fbDownloaderFetchPatched) {
         typeof url === "string" &&
         url.includes("/api/graphql")
       ) {
-        requestCount++;
-        console.log(
-          `[FB Downloader] 📡 GraphQL Request #${requestCount}: ${url}`
-        );
-
         const res = await originalFetch(input, init);
         const clone = res.clone();
         const text = await clone.text();
-
-        console.log(`[FB Downloader] 📦 Response size: ${text.length} bytes`);
-
         const responseBody = parseNdjson(text);
-        console.log(
-          `[FB Downloader] 📋 Parsed ${responseBody.length} JSON objects`
-        );
 
-        // LOG THE ENTIRE RESPONSE (first 2 items only to save space)
-        console.log(
-          `[FB Downloader] 🔍 FULL RESPONSE (first 2 items):`,
-          JSON.parse(JSON.stringify(responseBody.slice(0, 2)))
-        );
-
-        extractPostsFromGraphQL(responseBody, requestCount);
+        extractPostsFromGraphQL(responseBody);
 
         return res;
       }
     } catch (err) {
-      console.error("[FB Downloader] ❌ Fetch error:", err);
+      // Silent error handling
     }
 
     return originalFetch(input, init);
   };
 }
 
-// XHR interceptor
 if (!window.__fbDownloaderXHRPatched) {
   window.__fbDownloaderXHRPatched = true;
-  console.log("[FB Downloader] 🔧 Patching XMLHttpRequest...");
 
   const originalXHROpen = XMLHttpRequest.prototype.open;
   const originalXHRSend = XMLHttpRequest.prototype.send;
@@ -1720,19 +1180,10 @@ if (!window.__fbDownloaderXHRPatched) {
     if (this._fbdl_url && this._fbdl_url.includes("/api/graphql")) {
       this.addEventListener("load", function () {
         try {
-          requestCount++;
-          console.log(
-            `[FB Downloader] 📡 XHR GraphQL Request #${requestCount}`
-          );
-
           const responseBody = parseNdjson(this.responseText);
-          console.log(
-            `[FB Downloader] 📋 Parsed ${responseBody.length} JSON objects`
-          );
-
-          extractPostsFromGraphQL(responseBody, requestCount);
+          extractPostsFromGraphQL(responseBody);
         } catch (e) {
-          console.error("[FB Downloader] ❌ XHR error:", e);
+          // Silent error handling
         }
       });
     }
@@ -1740,78 +1191,17 @@ if (!window.__fbDownloaderXHRPatched) {
   };
 }
 
-function extractPostsFromGraphQL(responseBody, reqNum) {
+function extractPostsFromGraphQL(responseBody) {
   try {
-    console.log(`[FB Downloader] 🔍 Processing request #${reqNum}...`);
-
-    // Search for ANY object with text content
-    const objectsWithText = findObjectsWithText(responseBody);
-    console.log(
-      `[FB Downloader] 💬 Found ${objectsWithText.length} objects with text content`
-    );
-
-    if (objectsWithText.length > 0) {
-      console.log(
-        `[FB Downloader] 📝 Text samples:`,
-        objectsWithText.slice(0, 5).map((obj) => {
-          const getText = (val) => {
-            if (typeof val === "string") return val.substring(0, 50);
-            if (val?.text && typeof val.text === "string")
-              return val.text.substring(0, 50);
-            return "(complex object)";
-          };
-          return {
-            id: obj.id,
-            hasId: obj.hasId,
-            text: getText(obj.text || obj.message || obj.body),
-          };
-        })
-      );
-    }
-
     const posts = findPosts(responseBody);
-    console.log(
-      `[FB Downloader] 🎯 Found ${posts.length} potential posts in request #${reqNum}`
-    );
-
     let newPostsCount = 0;
 
-    posts.forEach((post, index) => {
+    posts.forEach((post) => {
       if (post.id && !detectedPosts.has(post.id)) {
         const parsedPost = parsePost(post);
 
-        // Skip posts with no text content
         if (!parsedPost.text || parsedPost.text.trim().length === 0) {
-          console.log(
-            `[FB Downloader] ⏭️ Skipped post (no text): ${parsedPost.id.substring(
-              0,
-              20
-            )}`
-          );
           return;
-        }
-
-        console.log(`[FB Downloader] 📄 Post #${index + 1}/${posts.length}:`, {
-          id: parsedPost.id.substring(0, 20) + "...",
-          author: parsedPost.author,
-          mediaCount: parsedPost.media?.length || 0,
-          hasText: !!parsedPost.text,
-          textPreview: parsedPost.text?.substring(0, 40) || "(none)",
-          __typename: post.__typename || "(not set)",
-        });
-
-        // Log media details for posts with media
-        if (parsedPost.media && parsedPost.media.length > 0) {
-          console.log(
-            `[FB Downloader] 🖼️ Media in post ${parsedPost.id.substring(
-              0,
-              20
-            )}:`,
-            parsedPost.media.map((m) => ({
-              type: m.type,
-              url: m.url.substring(0, 60) + "...",
-            }))
-          );
         }
 
         detectedPosts.set(post.id, parsedPost);
@@ -1819,71 +1209,21 @@ function extractPostsFromGraphQL(responseBody, reqNum) {
       }
     });
 
-    console.log(
-      `[FB Downloader] ✅ Added ${newPostsCount} new posts. Total: ${detectedPosts.size}`
-    );
-
-    // Show detailed breakdown
-    const allPosts = Array.from(detectedPosts.values());
-    const withMedia = allPosts.filter((p) => p.media?.length > 0).length;
-    const withText = allPosts.filter((p) => p.text).length;
-    const textOnly = allPosts.filter((p) => !p.media?.length && p.text).length;
-    const mediaOnly = allPosts.filter((p) => p.media?.length && !p.text).length;
-
-    console.log(
-      `[FB Downloader] 📊 BREAKDOWN: Total=${allPosts.length} | WithMedia=${withMedia} | WithText=${withText} | TextOnly=${textOnly} | MediaOnly=${mediaOnly}`
-    );
-
     if (newPostsCount > 0) {
       notifyPosts();
     }
   } catch (e) {
-    console.error("[FB Downloader] ❌ Extract error:", e, e.stack);
+    // Silent error handling
   }
 }
 
-// Find ANY object that has text content
-function findObjectsWithText(obj, results = [], depth = 0) {
-  if (!obj || typeof obj !== "object" || depth > 20) return results;
-
-  if (obj.message || obj.text || obj.body) {
-    results.push({
-      id: obj.id || "(no-id)",
-      message: obj.message,
-      text: obj.text,
-      body: obj.body,
-      hasId: !!obj.id,
-    });
-  }
-
-  if (Array.isArray(obj)) {
-    obj.forEach((item) => findObjectsWithText(item, results, depth + 1));
-  } else {
-    Object.values(obj).forEach((value) => {
-      if (value && typeof value === "object") {
-        findObjectsWithText(value, results, depth + 1);
-      }
-    });
-  }
-
-  return results;
-}
-
-// Check if an object is a comment (not a post)
 function isComment(obj) {
   if (!obj) return false;
 
-  // Comments have __typename "Comment"
   if (obj.__typename === "Comment") return true;
-
-  // Comments often have a "comment" field or are nested under "comment"
   if (obj.comment) return true;
-
-  // Comments might have "parent_feedback" indicating they're replies
   if (obj.parent_feedback) return true;
 
-  // Comments often have "feedback" with "comment_count" but no "share_count"
-  // Posts typically have both or neither
   if (
     obj.feedback &&
     obj.feedback.comment_count &&
@@ -1893,8 +1233,6 @@ function isComment(obj) {
     return true;
   }
 
-  // If it has a very short ID (comments often have shorter IDs than posts)
-  // This is a weak signal, so use carefully
   if (obj.id && typeof obj.id === "string" && obj.id.length < 10) {
     return true;
   }
@@ -1902,27 +1240,19 @@ function isComment(obj) {
   return false;
 }
 
-// Check if an object is a shared post (not an original post)
 function isSharedPost(obj) {
   if (!obj) return false;
 
-  // Shared posts often have a "reshare" or "share" field
   if (obj.reshare || obj.share) return true;
-
-  // Shared posts might have __typename "SharedStory"
   if (obj.__typename === "SharedStory") return true;
-
-  // Shared posts often have "attached_story" which is the original post
   if (obj.attached_story && obj.attached_story !== obj) return true;
 
   return false;
 }
 
-// Recursively find post objects
 function findPosts(obj, posts = [], depth = 0) {
   if (!obj || typeof obj !== "object" || depth > 20) return posts;
 
-  // Check wrappers first (common in Facebook GraphQL)
   if (
     obj.node?.id &&
     obj.node &&
@@ -1950,7 +1280,6 @@ function findPosts(obj, posts = [], depth = 0) {
     posts.push(obj.edge.node);
   }
 
-  // Capture if it has ID AND any content indicators AND is not a comment or shared post
   if (
     obj.id &&
     typeof obj.id === "string" &&
@@ -1972,7 +1301,6 @@ function findPosts(obj, posts = [], depth = 0) {
     }
   }
 
-  // Recurse through arrays and objects
   if (Array.isArray(obj)) {
     obj.forEach((item) => findPosts(item, posts, depth + 1));
   } else {
@@ -1986,7 +1314,6 @@ function findPosts(obj, posts = [], depth = 0) {
   return posts;
 }
 
-// Parse post object to extract relevant data
 function parsePost(post) {
   return {
     id: post.id || generateId(),
@@ -1998,7 +1325,6 @@ function parsePost(post) {
   };
 }
 
-// Extract author information
 function extractAuthor(post) {
   const paths = [
     post.from?.name,
@@ -2017,24 +1343,66 @@ function extractAuthor(post) {
   return "Unknown";
 }
 
-// Extract creation time
-function extractCreatedTime(post) {
-  const paths = [
-    post.created_time,
-    post.creation_time,
-    post.publish_time,
-    post.timestamp,
-    post.comet_sections?.content?.story?.creation_time,
-    post.node?.creation_time,
-  ];
+function toUnixSeconds(value) {
+  if (value == null) return null;
 
-  for (const path of paths) {
-    if (path) return typeof path === "number" ? path : parseInt(path);
+  if (typeof value === "number") {
+    if (value > 1e12) return Math.floor(value / 1000);
+    if (value > 1e9) return value;
+    return null;
   }
-  return Math.floor(Date.now() / 1000);
+
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return null;
+
+    if (/^\d+$/.test(s)) {
+      const n = Number(s);
+      if (!Number.isFinite(n)) return null;
+      if (n > 1e12) return Math.floor(n / 1000);
+      if (n > 1e9) return n;
+      return null;
+    }
+
+    const ms = Date.parse(s);
+    if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
+
+    const fixed = s.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+    const ms2 = Date.parse(fixed);
+    if (!Number.isNaN(ms2)) return Math.floor(ms2 / 1000);
+
+    return null;
+  }
+
+  return null;
 }
 
-// Extract text content
+function extractCreatedTime(post) {
+  const candidates = [
+    post.creation_time,
+    post.comet_sections?.content?.story?.creation_time,
+    post.comet_sections?.context_layout?.story?.creation_time,
+    post.comet_sections?.context_layout?.story?.comet_sections?.content?.story
+      ?.creation_time,
+    post.comet_sections?.context_layout?.story?.comet_sections?.metadata?.[0]
+      ?.story?.creation_time,
+    post.node?.creation_time,
+    post.story?.creation_time,
+    post.edge?.node?.creation_time,
+    post.created_time,
+    post.publish_time,
+    post.timestamp,
+    post.attachments?.data?.[0]?.target?.creation_time,
+  ];
+
+  for (const v of candidates) {
+    const t = toUnixSeconds(v);
+    if (t) return t;
+  }
+
+  return null;
+}
+
 function extractText(post) {
   const paths = [
     post.message?.text,
@@ -2057,7 +1425,6 @@ function extractText(post) {
   return null;
 }
 
-// Extract group information
 function extractGroup(post) {
   const paths = [
     post.to?.data?.[0]?.name,
@@ -2072,14 +1439,12 @@ function extractGroup(post) {
   return null;
 }
 
-// Extract media URLs from attachments
 function extractMedia(post) {
   const media = [];
 
   function searchMedia(obj, depth = 0) {
     if (!obj || typeof obj !== "object" || depth > 12) return;
 
-    // Image URLs
     if (obj.image?.uri) media.push({ type: "image", url: obj.image.uri });
     if (obj.image?.url) media.push({ type: "image", url: obj.image.url });
     if (obj.photo?.image?.uri)
@@ -2089,7 +1454,6 @@ function extractMedia(post) {
     if (obj.large_image?.uri)
       media.push({ type: "image", url: obj.large_image.uri });
 
-    // Video URLs
     if (obj.video?.playable_url)
       media.push({ type: "video", url: obj.video.playable_url });
     if (obj.playable_url) media.push({ type: "video", url: obj.playable_url });
@@ -2100,7 +1464,6 @@ function extractMedia(post) {
     if (obj.browser_native_sd_url)
       media.push({ type: "video", url: obj.browser_native_sd_url });
 
-    // Generic URL that might be an image
     if (
       obj.url &&
       typeof obj.url === "string" &&
@@ -2109,7 +1472,6 @@ function extractMedia(post) {
       media.push({ type: "image", url: obj.url });
     }
 
-    // Recursively search
     if (Array.isArray(obj)) {
       obj.forEach((item) => searchMedia(item, depth + 1));
     } else {
@@ -2123,7 +1485,6 @@ function extractMedia(post) {
 
   searchMedia(post);
 
-  // Remove duplicates
   const uniqueMedia = [];
   const seen = new Set();
   media.forEach((m) => {
@@ -2136,20 +1497,12 @@ function extractMedia(post) {
   return uniqueMedia;
 }
 
-// Generate unique ID
 function generateId() {
   return `post_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Notify content script about detected posts
 function notifyPosts() {
   const postsArray = Array.from(detectedPosts.values());
-
-  console.log(
-    `[FB Downloader] 📢 Notifying UI of ${postsArray.length} posts (${
-      postsArray.filter((p) => p.media?.length).length
-    } with media)`
-  );
 
   window.postMessage(
     {
@@ -2161,16 +1514,10 @@ function notifyPosts() {
   );
 }
 
-// Listen for download requests from UI
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
   const message = event.data;
   if (message && message.__EXT__ === true && message.type === "DOWNLOAD") {
-    console.log(
-      "[FB Downloader] 📥 Download requested for",
-      message.payload.posts.length,
-      "posts"
-    );
     window.postMessage(
       {
         __EXT__: true,
@@ -2182,15 +1529,8 @@ window.addEventListener("message", (event) => {
   }
 });
 
-// Periodically notify UI (keep posts visible)
 setInterval(() => {
   if (detectedPosts.size > 0) {
     notifyPosts();
   }
 }, 5000);
-
-console.log("[FB Downloader] 🔬 ENHANCED DIAGNOSTIC VERSION READY!");
-console.log(
-  "[FB Downloader] 📌 Now scroll Facebook and watch the console logs"
-);
-console.log("[FB Downloader] 💡 Look for posts with media counts > 0");

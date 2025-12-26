@@ -251,22 +251,85 @@ function extractAuthor(post) {
   }
   return "Unknown";
 }
+function toUnixSeconds(value) {
+  if (value == null) return null;
+
+  // Already a number
+  if (typeof value === "number") {
+    // ms epoch
+    if (value > 1e12) return Math.floor(value / 1000);
+    // sec epoch
+    if (value > 1e9) return value;
+    return null;
+  }
+
+  // String case
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return null;
+
+    // If it's a pure digit string, treat as epoch
+    if (/^\d+$/.test(s)) {
+      const n = Number(s);
+      if (!Number.isFinite(n)) return null;
+      if (n > 1e12) return Math.floor(n / 1000); // ms
+      if (n > 1e9) return n; // sec
+      return null;
+    }
+
+    // ISO-ish datetime (GraphQL often returns these)
+    const ms = Date.parse(s);
+    if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
+
+    // Sometimes FB uses "YYYY-MM-DDTHH:mm:ss+0000" (no colon in tz)
+    // Convert +0000 -> +00:00 and retry
+    const fixed = s.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+    const ms2 = Date.parse(fixed);
+    if (!Number.isNaN(ms2)) return Math.floor(ms2 / 1000);
+
+    return null;
+  }
+
+  return null;
+}
+function findUnixTimestampDeep(obj, depth = 0) {
+  if (!obj || typeof obj !== "object" || depth > 12) return null;
+
+  for (const value of Object.values(obj)) {
+    // direct unix seconds (10 digits)
+    if (typeof value === "number" && value > 1e9 && value < 2e10) {
+      return value;
+    }
+
+    // wrapped number
+    if (typeof value === "string" && /^\d{10}$/.test(value)) {
+      return Number(value);
+    }
+
+    if (value && typeof value === "object") {
+      const found = findUnixTimestampDeep(value, depth + 1);
+      if (found) return found;
+    }
+  }
+
+  return null;
+}
 
 // Extract creation time
 function extractCreatedTime(post) {
-  const paths = [
-    post.created_time,
-    post.creation_time,
-    post.publish_time,
-    post.timestamp,
-    post.comet_sections?.content?.story?.creation_time,
-    post.node?.creation_time,
-  ];
+  // 1️⃣ Try known fast paths (cheap)
+  const fast =
+    post?.comet_sections?.timestamp?.story?.creation_time ||
+    post?.attached_story?.comet_sections?.timestamp?.story?.creation_time ||
+    post?.creation_time ||
+    post?.created_time ||
+    post?.publish_time;
 
-  for (const path of paths) {
-    if (path) return typeof path === "number" ? path : parseInt(path);
-  }
-  return Math.floor(Date.now() / 1000);
+  const fastParsed = toUnixSeconds(fast);
+  if (fastParsed) return fastParsed;
+
+  // 2️⃣ LAST RESORT (always works if FB sends time)
+  return findUnixTimestampDeep(post);
 }
 
 // Extract text content
