@@ -16,7 +16,7 @@ export default function DownloaderApp() {
   // Filter states
   const [timeFilter, setTimeFilter] = useState(""); // e.g., "10m", "2h", "1d"
   const [keywordFilter, setKeywordFilter] = useState(
-    "স্বাগতম, মাশাল্লাহ, বিক্রি, কেনা, সেল, বিক্রয়, মূল্য, দাম, বাসা লাগবে, একদাম, সিট লাগবে, প্রয়োজন, বাসা প্রয়োজন, প্রয়োজন, প্রয়োজান, ভারা লাগবে, ভারা লাগব, ভাড়া লাগব, কিনতে, বিক্রয়, Sell, welcome, নতুন সদস্য, মধু, সেলারি, Off topic, পার্ট টাইম, ভাইরাল_ভিডিও, রুম দরকার, দুধ, আমিন, অর্ডার, ডেইরি ফার্ম, ড্রেস, youtu.be, ওড়না, projon, নিয়োগ, সূরা, পড়াচ্ছি, কোচিং, সেকেন্ড হ্যান্ড, শুভ রাত্রি, ইনকাম, লাগবে, বিক্রয়, বাসা দরকার, সেল, ডেলিভারি, সোফা ক্লিনিং,সার্ভিস পেতে,follow back,𝙁𝙤𝙡𝙡𝙤𝙬 𝘽𝙖𝙘𝙠,দোয়া,জাতীয় পাখি,দেশের,room dorkar, bmw,সরকার,মিল্ক শেক,হারিয়ে গেছে,নির্বাচন,আল্লাহ,প্রমোশনাল ভিডিও সার্ভিসিং ,Offer,কাজ করে থাকি,বাংলাদেশে,Rent a car, RAM যুদ্ধ,ঈদের,Page,মেহেদী,ক্রিম,with a Facebook Post:, Sale, mAh ,বেতন ,teacher,পাইকারি, প্রাকটিকাল"
+    "স্বাগতম, টিউশন,মাশাল্লাহ, বিক্রি, কেনা, সেল, বিক্রয়, মূল্য, দাম, বাসা লাগবে, একদাম, সিট লাগবে, প্রয়োজন, বাসা প্রয়োজন, প্রয়োজন, প্রয়োজান, ভারা লাগবে, ভারা লাগব, ভাড়া লাগব, কিনতে, বিক্রয়, Sell, welcome, নতুন সদস্য, মধু, সেলারি, Off topic, পার্ট টাইম, ভাইরাল_ভিডিও, রুম দরকার, দুধ, আমিন, অর্ডার, ডেইরি ফার্ম, ড্রেস, youtu.be, ওড়না, projon, নিয়োগ, সূরা, পড়াচ্ছি, কোচিং, সেকেন্ড হ্যান্ড, শুভ রাত্রি, ইনকাম, লাগবে, বিক্রয়, বাসা দরকার, সেল, ডেলিভারি, সোফা ক্লিনিং,সার্ভিস পেতে,follow back,𝙁𝙤𝙡𝙡𝙤𝙬 𝘽𝙖𝙘𝙠,দোয়া,জাতীয় পাখি,দেশের,room dorkar, bmw,সরকার,মিল্ক শেক,হারিয়ে গেছে,নির্বাচন,আল্লাহ,প্রমোশনাল ভিডিও সার্ভিসিং ,Offer,কাজ করে থাকি,বাংলাদেশে,Rent a car, RAM যুদ্ধ,ঈদের,Page,মেহেদী,ক্রিম,with a Facebook Post:, Sale, mAh ,বেতন ,teacher,পাইকারি, প্রাকটিকাল"
   );
   const [numberFilter, setNumberFilter] = useState(true);
 
@@ -67,6 +67,7 @@ export default function DownloaderApp() {
 
     return value * (multipliers[unit] || 0);
   };
+
   const normalizePostTime = (rawTime) => {
     if (rawTime == null) return null;
 
@@ -194,6 +195,30 @@ export default function DownloaderApp() {
               `[DownloaderApp] Filtered ${message.payload.posts.length} posts down to ${filteredPosts.length} posts`
             );
             setPosts(filteredPosts);
+
+            // Auto-stop scrolling if we encounter old posts beyond time filter
+            if (isScrolling && timeFilter) {
+              const filterSeconds = parseTimeFilter(timeFilter);
+              if (filterSeconds) {
+                // Check if any newly detected posts are older than the filter
+                const hasOldPosts = message.payload.posts.some((post) => {
+                  const postTime = normalizePostTime(post.createdTime);
+                  if (!postTime) return false;
+
+                  const now = Math.floor(Date.now() / 1000);
+                  const ageSeconds = now - postTime;
+
+                  return ageSeconds > filterSeconds;
+                });
+
+                if (hasOldPosts) {
+                  console.log(
+                    `[DownloaderApp] Found posts older than ${timeFilter}, stopping auto-scroll`
+                  );
+                  stopAutoScroll();
+                }
+              }
+            }
             break;
           case "DOWNLOAD_STARTED":
             setDownloading(true);
@@ -221,7 +246,7 @@ export default function DownloaderApp() {
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [timeFilter, keywordFilter, numberFilter]);
+  }, [timeFilter, keywordFilter, numberFilter, isScrolling]);
 
   // Dragging functionality
   useEffect(() => {
@@ -557,7 +582,8 @@ export default function DownloaderApp() {
               />
             </label>
             <small style={{ marginLeft: "10px", color: "#666" }}>
-              (m=minutes, h=hours, d=days)
+              (m=minutes, h=hours, d=days) - Auto-scroll stops when older posts
+              found
             </small>
           </div>
 
